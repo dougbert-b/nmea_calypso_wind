@@ -1,14 +1,7 @@
 
 /***********************************************************************//**
-  \file   WindMonitor.ino
-  \brief  NMEA2000 library example. Send main wind data to the bus.
-  \ingroup group_examples
-
-  This simple example sends hardcoded wind angle and speed information
-  to the NMEA2000 bus. To make it working device you need add functionality, which
-  reads real values.
-
-  Example does not fullfill all NMEA2000 requirements.
+  An Arduino/ESP32 program to read BLE data from a Calypso wireless wind meter
+  and re-transmit it over NMEA2000.
 */
 
 #include <Arduino.h>
@@ -37,15 +30,6 @@
 #include "esp_mac.h"
 
 #include <BLEDevice.h>
-
-
-constexpr bool verbose = true;
-
-
-
-//BNO085 outputs radians and NMEA2000 takes radians, but messages and BLE ought to use degrees
-constexpr double RAD_2_DEG = 180.0 / PI;
-constexpr double DEG_2_RAD = 1 / RAD_2_DEG; 
 
 
 tNMEA0183* NMEA0183 = nullptr;
@@ -369,6 +353,15 @@ void loop() {
   
   
   NMEA2000.ParseMessages();
+
+  // Check if SourceAddress has changed (due to address conflict on bus)
+  if (NMEA2000.ReadResetAddressChanged()) {
+    // Save potentially changed Source Address to NVS memory
+    persistentData.node_address = NMEA2000.GetN2kSource();
+    persistentData.commit();
+    Serial.printf("NMEA2000 device address changed to 0x%x\n", persistentData.node_address);
+  }
+
 
   delay(1000); // Delay a second between loops.
 
