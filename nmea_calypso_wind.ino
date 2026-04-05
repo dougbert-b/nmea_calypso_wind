@@ -77,24 +77,30 @@ const unsigned long transmitMessages[] PROGMEM={130306L,0};   // Apparent wind m
 
 
 // Calypso-defined values
-const char *CALYPSO_DATA_SERVICE = "181A";    // Industry standard
+const char *WIND_SERVICE = "181A";    // Industry standard
 const char *AWS_CHARACTERISTIC = "2A72";   // Industry standard
 const char *AWD_CHARACTERISTIC = "2A73";   // Industry standard
 
-const char *CALYPSO_BATTERY_SERVICE = "180F";
+const char *BATTERY_SERVICE = "180F";  // Standard
 const char *BATTERY_LEVEL_CHARACTERISTIC =   "2a19";  // Standard
 
 // The remote service we wish to connect to.
-static BLEUUID serviceUUID(CALYPSO_DATA_SERVICE);
+static BLEUUID windServiceUUID(WIND_SERVICE);
 // The characteristic of the remote service we are interested in.
 static BLEUUID    awsUUID(AWS_CHARACTERISTIC);
 static BLEUUID    awdUUID(AWD_CHARACTERISTIC);
 
+// Another remote service we wish to connect to.
+static BLEUUID batteryServiceUUID(BATTERY_SERVICE);
+// The characteristic of the other remote service we are interested in.
+static BLEUUID   batteryLevelUUID(BATTERY_LEVEL_CHARACTERISTIC);
 
 static boolean doConnect = false;
 static boolean connected = false;
-static BLERemoteCharacteristic* pAwsCharacteristic;
-static BLERemoteCharacteristic* pAwdCharacteristic;
+static BLERemoteCharacteristic* pAwsCharacteristic = nullptr;
+static BLERemoteCharacteristic* pAwdCharacteristic = nullptr;
+static BLERemoteCharacteristic* pBatteryLevelCharacteristic = nullptr;
+
 
 static BLEAdvertisedDevice* myDevice;
 
@@ -115,13 +121,9 @@ static void awsNotifyCallback(
   size_t length,
   bool isNotify) {
 
-    Serial.print("Notify callback for characteristic ");
-    Serial.print(pBLERemoteCharacteristic->getUUID().toString().c_str());
-    Serial.print(" of data length ");
-    Serial.print(length);
-
-    lastAWS = convertValue(pData);
-    Serial.printf("  Value : %2.1f\n", lastAWS);
+  Serial.printf("Notify callback for AWS, data length %d ", length);
+  lastAWS = convertValue(pData);
+  Serial.printf("value : %2.1f\n", lastAWS);
 }
 
 
@@ -131,21 +133,44 @@ static void awdNotifyCallback(
   uint8_t* pData,
   size_t length,
   bool isNotify) {
-    Serial.print("Notify callback for characteristic ");
-    Serial.print(pBLERemoteCharacteristic->getUUID().toString().c_str());
-    Serial.print(" of data length ");
-    Serial.print(length);
 
-    double lastAWD = convertValue(pData);
+  Serial.printf("Notify callback for AWD, data length %d ", length);
+  double lastAWD = convertValue(pData);
+  Serial.printf("value : %3.0f\n", lastAWD);
 
-    Serial.printf("  Value : %3.0f\n", lastAWD);
-
-    // Send this AWD and the most recent AWS to NMEA2000
-    // Note that the Calypso sends the AWD notification immediately after an AWS notification.
-    SendN2kWind(lastAWS, lastAWD);
+  // Send this AWD and the most recent AWS to NMEA2000
+  // Note that the Calypso sends the AWD notification immediately after an AWS notification.
+  SendN2kWind(lastAWS, lastAWD);
 }
 
 
+static void batteryLevelNotifyCallback(
+  BLERemoteCharacteristic* pBLERemoteCharacteristic,
+  uint8_t* pData,
+  size_t length,
+  bool isNotify) {
+
+  Serial.printf("Notify callback for battery, data length %d ", length);
+  int batteryLevel = pData[0];
+  Serial.printf("value : %d\n", batteryLevel);
+
+  SendN2kBatteryLevel(batteryLevel);
+}
+
+
+// Define schedulers for some N2K messages. Define schedulers here disabled. Schedulers will be enabled
+// on OnN2kOpen so they will be synchronized with system.
+// We use own scheduler for each message so that each can have different offset and period.
+// Setup periods according PGN definition (see comments on IsDefaultSingleFrameMessage and
+// IsDefaultFastPacketMessage) and message first start offsets. Use a bit different offset for
+// each message so they will not be sent at same time.
+tN2kSyncScheduler BatteryLevelScheduler(false,10000,510);   // Send battery level every ~10 seconds
+
+
+void OnN2kOpen() {
+  // Start schedulers now.
+  BatteryLevelScheduler.UpdateNextTime();
+}
 
 
 class MyClientCallback : public BLEClientCallbacks {
@@ -176,18 +201,18 @@ bool connectToServer() {
     Serial.printf("Connecting to: %s\n", myDevice->getAddress().toString().c_str());
 
     // Obtain a reference to the service we are after in the remote BLE server.
-    BLERemoteService* pRemoteService = pClient->getService(serviceUUID);
-    if (pRemoteService == nullptr) {
-      Serial.print("Failed to find our service UUID: ");
-      Serial.println(serviceUUID.toString().c_str());
+    BLERemoteService* pWindService = pClient->getService(windServiceUUID);
+    if (pWindService == nullptr) {
+      Serial.print("Failed to find wind service UUID: ");
+      Serial.println(windServiceUUID.toString().c_str());
       pClient->disconnect();
       return false;
     }
     Serial.println(" - Found our service");
 
-
+ 
     // Obtain references to the characteristics in the service of the remote BLE server.
-    pAwsCharacteristic = pRemoteService->getCharacteristic(awsUUID);
+    pAwsCharacteristic = pWindService->getCharacteristic(awsUUID);
     if (pAwsCharacteristic == nullptr) {
       Serial.print("Failed to find AWS characteristic UUID: ");
       Serial.println(awsUUID.toString().c_str());
@@ -200,7 +225,7 @@ bool connectToServer() {
     pAwsCharacteristic->registerForNotify(awsNotifyCallback);
 
   
-    pAwdCharacteristic = pRemoteService->getCharacteristic(awdUUID);
+    pAwdCharacteristic = pWindService->getCharacteristic(awdUUID);
     if (pAwdCharacteristic == nullptr) {
       Serial.print("Failed to find AWD characteristic UUID: ");
       Serial.println(awdUUID.toString().c_str());
@@ -212,6 +237,30 @@ bool connectToServer() {
     
     assert(pAwdCharacteristic->canNotify());
     pAwdCharacteristic->registerForNotify(awdNotifyCallback);
+
+    // Obtain a reference to the battery service and characteristic.
+    // Tolerate a missing battery service.
+    // BTW, the notification for this data seem to be broken.
+
+    BLERemoteService* pBatteryService = pClient->getService(batteryServiceUUID);
+    if (pBatteryService) {
+      Serial.println(" - Found our battery service");
+      pBatteryLevelCharacteristic = pBatteryService->getCharacteristic(batteryLevelUUID);
+      if (pBatteryLevelCharacteristic) {
+        assert(pBatteryLevelCharacteristic->canRead());
+        assert(pBatteryLevelCharacteristic->canNotify());
+
+        Serial.println(" - Found Battery Level characteristic");
+        pBatteryLevelCharacteristic->registerForNotify(batteryLevelNotifyCallback);
+      } else {
+        Serial.print("Failed to find battery level characteristic UUID: ");
+        Serial.println(batteryLevelUUID.toString().c_str());
+      }
+    } else {
+      Serial.print("Failed to find battery service UUID: ");
+      Serial.println(batteryServiceUUID.toString().c_str());
+    }
+
 
     connected = true;
     return true;
@@ -230,7 +279,7 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
     Serial.println(advertisedDevice.toString().c_str());
 
     // We have found a device, let us now see if it contains the service we are looking for.
-    if (advertisedDevice.haveServiceUUID() && advertisedDevice.isAdvertisingService(serviceUUID)) {
+    if (advertisedDevice.haveServiceUUID() && advertisedDevice.isAdvertisingService(windServiceUUID)) {
 
       BLEDevice::getScan()->stop();
       myDevice = new BLEAdvertisedDevice(advertisedDevice);
@@ -326,6 +375,9 @@ void setup() {
   NMEA2000.ExtendTransmitMessages(transmitMessages);
   Serial.print("setup 2\n");
 
+  // Define OnOpen call back. This will be called, when CAN is open and system starts address claiming.
+  NMEA2000.SetOnOpen(OnN2kOpen);
+
   if (!NMEA2000.Open()) {
     Serial.println("NMEA2000.Open failed");
   }
@@ -374,7 +426,24 @@ void loop() {
   }
 
 
-  delay(1000); // Delay a second between loops.
+
+  if (BatteryLevelScheduler.IsTime()) {
+    BatteryLevelScheduler.UpdateNextTime();
+
+    // Read the battery level characteristic (it rarely sends notifications)
+    if (pBatteryLevelCharacteristic) {
+      
+      int batteryLevel = pBatteryLevelCharacteristic->readUInt8();
+
+      Serial.printf("  Battery level: %d\n", batteryLevel);
+
+      // Send this battery level to NMEA2000
+      SendN2kBatteryLevel(batteryLevel);
+    }
+  }
+
+
+  //delay(1000); // Delay a second between loops.
 
 }
 
@@ -399,4 +468,17 @@ void SendN2kWind(double windSpeed, double windAngle) {
   delay(5); //allow LED to blink and the cpu to switch to other tasks
   digitalWrite(LED_BUILTIN, HIGH);
 
+}
+
+
+// *****************************************************************************
+void SendN2kBatteryLevel(int batteryLevel) {
+  
+  tN2kMsg N2kMsg;
+ 
+  Serial.printf("Transmitting NMEA data: Battery Level %d\n", batteryLevel);
+
+  SetN2kDCStatus(N2kMsg, 1, 1, N2kDCt_Battery, batteryLevel, 100 /* state of health % */, 999.9 /* Remaining time */); 
+  NMEA2000.SendMsg(N2kMsg);
+  
 }
