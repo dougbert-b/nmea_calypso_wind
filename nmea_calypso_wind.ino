@@ -34,9 +34,6 @@
 #include <BLEDevice.h>
 
 
-tNMEA0183* NMEA0183 = nullptr;
-
-
 // Persistent Data
 
 Preferences prefs;
@@ -68,10 +65,66 @@ PersistentData persistentData;
 
 
 
+tNMEA0183* NMEA0183 = nullptr;
 
-// List here messages your device will transmit.
-const unsigned long transmitMessages[] PROGMEM={130306L,0};   // Apparent wind message
 
+// List here the N2K messages we will transmit.
+const unsigned long transmitMessages[] PROGMEM={130306L, 127506L, 0};   // Apparent Wind and DC Status messages
+
+
+// Define schedulers for some N2K messages. Define schedulers here disabled. Schedulers will be enabled
+// on OnN2kOpen so they will be synchronized with system.
+// We use own scheduler for each message so that each can have different offset and period.
+// Setup periods according PGN definition (see comments on IsDefaultSingleFrameMessage and
+// IsDefaultFastPacketMessage) and message first start offsets. Use a bit different offset for
+// each message so they will not be sent at same time.
+
+tN2kSyncScheduler BatteryLevelScheduler(false,2000,510);
+// Send battery level every 2 seconds.  The value displayed on the Gpsmap ages out after ~3 seconds.
+
+
+void OnN2kOpen() {
+  // Start schedulers now.
+  BatteryLevelScheduler.UpdateNextTime();
+}
+
+
+
+
+// *****************************************************************************
+void SendN2kWind(double windSpeed, double windAngle) {
+
+  digitalWrite(LED_BUILTIN, LOW);  // Indicate NMEA data transmission
+
+  tN2kMsg N2kMsg;
+ 
+  Serial.printf("Transmitting NMEA data: AWS %2.1f  AWD %3.0f\n", windSpeed, windAngle);
+
+  SetN2kWindSpeed(N2kMsg, 1, windSpeed, DegToRad(windAngle), N2kWind_Apprent);
+  NMEA2000.SendMsg(N2kMsg);
+  
+  tNMEA0183Msg NMEA0183Msg;
+  if ( NMEA0183SetMWV(NMEA0183Msg, DegToRad(windAngle), NMEA0183Wind_Apparent, windSpeed) ) {
+    NMEA0183->SendMessage(NMEA0183Msg);
+  }
+  
+  delay(5); //allow LED to blink and the cpu to switch to other tasks
+  digitalWrite(LED_BUILTIN, HIGH);
+
+}
+
+
+// *****************************************************************************
+void SendN2kBatteryLevel(int batteryLevel) {
+  
+  tN2kMsg N2kMsg;
+ 
+  Serial.printf("Transmitting NMEA data: Battery Level %d\n", batteryLevel);
+
+  SetN2kDCStatus(N2kMsg, 1, 1, N2kDCt_Battery, batteryLevel, 100 /* state of health % */, 999.9 /* Remaining time */); 
+  NMEA2000.SendMsg(N2kMsg);
+  
+}
 
 
 
@@ -105,14 +158,13 @@ static BLERemoteCharacteristic* pBatteryLevelCharacteristic = nullptr;
 static BLEAdvertisedDevice* myDevice;
 
 
+double lastAWS = 0.0;   
 
+// Convert from integral hundredths to a proper floating-point value.
 double convertValue(const uint8_t* data) {
 
   return ((data[1]*256)+data[0])/100.0;
 }
-
-
-double lastAWS = 0.0;   
 
 
 static void awsNotifyCallback(
@@ -156,22 +208,6 @@ static void batteryLevelNotifyCallback(
 
   SendN2kBatteryLevel(batteryLevel);
 }
-
-
-// Define schedulers for some N2K messages. Define schedulers here disabled. Schedulers will be enabled
-// on OnN2kOpen so they will be synchronized with system.
-// We use own scheduler for each message so that each can have different offset and period.
-// Setup periods according PGN definition (see comments on IsDefaultSingleFrameMessage and
-// IsDefaultFastPacketMessage) and message first start offsets. Use a bit different offset for
-// each message so they will not be sent at same time.
-tN2kSyncScheduler BatteryLevelScheduler(false,10000,510);   // Send battery level every ~10 seconds
-
-
-void OnN2kOpen() {
-  // Start schedulers now.
-  BatteryLevelScheduler.UpdateNextTime();
-}
-
 
 class MyClientCallback : public BLEClientCallbacks {
   void onConnect(BLEClient* pclient) {
@@ -447,38 +483,3 @@ void loop() {
 
 }
 
-
-// *****************************************************************************
-void SendN2kWind(double windSpeed, double windAngle) {
-
-  digitalWrite(LED_BUILTIN, LOW);  // Indicate NMEA data transmission
-
-  tN2kMsg N2kMsg;
- 
-  Serial.printf("Transmitting NMEA data: AWS %2.1f  AWD %3.0f\n", windSpeed, windAngle);
-
-  SetN2kWindSpeed(N2kMsg, 1, windSpeed, DegToRad(windAngle), N2kWind_Apprent);
-  NMEA2000.SendMsg(N2kMsg);
-  
-  tNMEA0183Msg NMEA0183Msg;
-  if ( NMEA0183SetMWV(NMEA0183Msg, DegToRad(windAngle), NMEA0183Wind_Apparent, windSpeed) ) {
-    NMEA0183->SendMessage(NMEA0183Msg);
-  }
-  
-  delay(5); //allow LED to blink and the cpu to switch to other tasks
-  digitalWrite(LED_BUILTIN, HIGH);
-
-}
-
-
-// *****************************************************************************
-void SendN2kBatteryLevel(int batteryLevel) {
-  
-  tN2kMsg N2kMsg;
- 
-  Serial.printf("Transmitting NMEA data: Battery Level %d\n", batteryLevel);
-
-  SetN2kDCStatus(N2kMsg, 1, 1, N2kDCt_Battery, batteryLevel, 100 /* state of health % */, 999.9 /* Remaining time */); 
-  NMEA2000.SendMsg(N2kMsg);
-  
-}
