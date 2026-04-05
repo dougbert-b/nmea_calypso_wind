@@ -1,3 +1,5 @@
+//#include <NMEA2000_esp32.h>
+
 
 /***********************************************************************//**
   An Arduino/ESP32 program to read BLE data from a Calypso wireless wind meter
@@ -13,8 +15,8 @@
 //#define NMEA2000_ARDUINO_DUE_CAN_BUS tNMEA2000_due::CANDevice1  // If you use Arduino DUE and want to use CAN bus 1 instead of 0, uncomment this.
 //#define NMEA2000_TEENSY_CAN_BUS 1 // If you use Teensy 3.5 or 3.6 and want to use second CAN bus, uncomment this.
 
-#define ESP32_CAN_TX_PIN GPIO_NUM_32  // Set CAN TX port 
-#define ESP32_CAN_RX_PIN GPIO_NUM_34   // Set CAN RX port  // BTW, 4 is unavailable on Heltec
+#define ESP32_CAN_TX_PIN GPIO_NUM_3  // Set CAN TX port   This is the pin labeled D2 on the Seeed Xiao ESP32S3 board
+#define ESP32_CAN_RX_PIN GPIO_NUM_2   // Set CAN RX port  This is the pin labeled D on the Seeed Xiao ESP32S3 board
 
 #include <NMEA0183.h>
 #include <NMEA0183Msg.h>
@@ -257,9 +259,12 @@ void setup() {
 
 
   Serial.begin(115200);
+  delay(1000);
   
+  Serial.print("setup 0\n");
+
   pinMode(LED_BUILTIN, OUTPUT);
-  digitalWrite(LED_BUILTIN, LOW);
+  digitalWrite(LED_BUILTIN, HIGH);
 
   
   // Note: The ESP32 EEPROM library is used differently than the official Arduino version.
@@ -274,11 +279,15 @@ void setup() {
 
   delay(1000);
 
+  
+
   // For NMEA0183 output on ESP32
   Serial2.begin(4800, SERIAL_8N1, 16 /*Rx pin*/, 17 /*Tx pin*/, true /*invert*/);
 
   NMEA0183 = new tNMEA0183(&Serial2);
   NMEA0183->Open();
+
+  Serial.print("setup 1\n");
 
   // Reserve enough buffer for sending all messages.
   NMEA2000.SetN2kCANMsgBufSize(8);
@@ -310,6 +319,7 @@ void setup() {
 
 
   // If you also want to see all traffic on the bus use N2km_ListenAndNode instead of N2km_NodeOnly below
+  Serial.printf("NMEA2000 device address initialized to 0x%x\n", persistentData.node_address);
   NMEA2000.SetMode(tNMEA2000::N2km_NodeOnly, persistentData.node_address);   // Read stored last NodeAddress, default 34
   NMEA2000.EnableForward(false);
   // Here we tell library, which PGNs we transmit
@@ -320,6 +330,7 @@ void setup() {
     Serial.println("NMEA2000.Open failed");
   }
 
+  Serial.print("setup 3\n");
 
   BLEDevice::init("");
 
@@ -371,7 +382,7 @@ void loop() {
 // *****************************************************************************
 void SendN2kWind(double windSpeed, double windAngle) {
 
-  digitalWrite(LED_BUILTIN, HIGH);  // Indicate NMEA data transmission
+  digitalWrite(LED_BUILTIN, LOW);  // Indicate NMEA data transmission
 
   tN2kMsg N2kMsg;
  
@@ -386,6 +397,6 @@ void SendN2kWind(double windSpeed, double windAngle) {
   }
   
   delay(5); //allow LED to blink and the cpu to switch to other tasks
-  digitalWrite(LED_BUILTIN, LOW);
+  digitalWrite(LED_BUILTIN, HIGH);
 
 }
