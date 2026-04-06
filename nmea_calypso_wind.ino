@@ -1,5 +1,3 @@
-//#include <NMEA2000_esp32.h>
-
 
 /***********************************************************************//**
   An Arduino/ESP32 program to read BLE data from a Calypso wireless wind meter
@@ -7,6 +5,17 @@
 */
 
 #include <Arduino.h>
+
+#include <WiFi.h>
+#include <AsyncTCP.h>
+#include <ESPAsyncWebServer.h>
+#include <ElegantOTA.h>
+
+const char* ssid = "xxkalispera";
+const char* password = "koko44093JTDKB";
+
+AsyncWebServer server(80);
+
 //#define N2k_SPI_CS_PIN 53    // If you use mcp_can and CS pin is not 53, uncomment this and modify definition to match your CS pin.
 //#define N2k_CAN_INT_PIN 21   // If you use mcp_can and interrupt pin is not 21, uncomment this and modify definition to match your interrupt pin.
 //#define USE_MCP_CAN_CLOCK_SET 8  // If you use mcp_can and your mcp_can shield has 8MHz chrystal, uncomment this.
@@ -351,6 +360,8 @@ void setup() {
   pinMode(LED_BUILTIN, OUTPUT);
   digitalWrite(LED_BUILTIN, HIGH);
 
+
+
   
   // Note: The ESP32 EEPROM library is used differently than the official Arduino version.
   persistentData.begin();
@@ -364,7 +375,44 @@ void setup() {
 
   delay(1000);
 
-  
+
+
+
+  WiFi.mode(WIFI_MODE_STA);
+  WiFi.begin(ssid, password);
+  Serial.println("");
+
+  // Wait for connection, up to a point
+
+  int tries = 0;
+  while (tries++ < 20 && WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+
+  if (WiFi.status() == WL_CONNECTED) {
+
+    Serial.println("");
+    Serial.print("Connected to ");
+    Serial.println(ssid);
+    Serial.print("IP address: ");
+    Serial.println(WiFi.localIP());
+
+    server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
+      request->send(200, "text/plain", "Hi! I am ESP32 Compass.");
+    });
+
+    server.begin();
+    Serial.println("HTTP server started");
+
+    ElegantOTA.begin(&server);    // Start ElegantOTA
+  } else {
+    Serial.printf("\nCould not access Wifi...\n");
+    WiFi.mode(WIFI_MODE_NULL);
+
+  }
+
+
 
   // For NMEA0183 output on ESP32
   Serial2.begin(4800, SERIAL_8N1, 16 /*Rx pin*/, 17 /*Tx pin*/, true /*invert*/);
@@ -478,6 +526,9 @@ void loop() {
     }
   }
 
+  if (WiFi.status() == WL_CONNECTED) {
+    ElegantOTA.loop();
+  }
 
   //delay(1000); // Delay a second between loops.
 
