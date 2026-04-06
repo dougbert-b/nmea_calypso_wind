@@ -1,7 +1,11 @@
 # nmea\_calypso\_wind
 
-An Arduino/ESP32 program to read BLE data from a Calypso wireless wind meter and re-transmit it over NMEA2000.
+An Arduino/ESP32S3 program to read BLE data from a Calypso wireless wind meter and re-transmit it over NMEA2000.
+It outputs both NMEA0183 and NMEA2000 apparent wind speed and angle, as well
+as NMEA2000 battery level.
 
-Outputs both NMEA0183 heading and NMEA2000 heading and attitude. My hardware design also includes a SN65VHD230
-CAN Bus transceiver board and a 12-to-5 volt voltage regulator board.
+My hardware design includes a Xiao ESP32S3 board, a SN65VHD230
+CAN Bus transceiver board, and a 12-to-5 volt voltage regulator board.
+
+Also has a Wifi Access Point for OTA firmware updates.
 
