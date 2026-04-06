@@ -7,22 +7,13 @@
 #include <Arduino.h>
 
 #include <WiFi.h>
-#include <AsyncTCP.h>
 #include <ESPAsyncWebServer.h>
+#include <AsyncTCP.h>
+
+#include <DNSServer.h>
 #include <ElegantOTA.h>
 
-const char* ssid = "xxkalispera";
-const char* password = "koko44093JTDKB";
 
-AsyncWebServer server(80);
-
-//#define N2k_SPI_CS_PIN 53    // If you use mcp_can and CS pin is not 53, uncomment this and modify definition to match your CS pin.
-//#define N2k_CAN_INT_PIN 21   // If you use mcp_can and interrupt pin is not 21, uncomment this and modify definition to match your interrupt pin.
-//#define USE_MCP_CAN_CLOCK_SET 8  // If you use mcp_can and your mcp_can shield has 8MHz chrystal, uncomment this.
-//#define ESP32_CAN_TX_PIN GPIO_NUM_16 // If you use ESP32 and do not have TX on default IO 16, uncomment this and and modify definition to match your CAN TX pin.
-//#define ESP32_CAN_RX_PIN GPIO_NUM_17 // If you use ESP32 and do not have RX on default IO 4, uncomment this and and modify definition to match your CAN TX pin.
-//#define NMEA2000_ARDUINO_DUE_CAN_BUS tNMEA2000_due::CANDevice1  // If you use Arduino DUE and want to use CAN bus 1 instead of 0, uncomment this.
-//#define NMEA2000_TEENSY_CAN_BUS 1 // If you use Teensy 3.5 or 3.6 and want to use second CAN bus, uncomment this.
 
 #define ESP32_CAN_TX_PIN GPIO_NUM_3  // Set CAN TX port   This is the pin labeled D2 on the Seeed Xiao ESP32S3 board
 #define ESP32_CAN_RX_PIN GPIO_NUM_2   // Set CAN RX port  This is the pin labeled D on the Seeed Xiao ESP32S3 board
@@ -170,7 +161,7 @@ static BLEAdvertisedDevice* myDevice;
 double lastAWS = 0.0;   
 
 // Convert from integral hundredths to a proper floating-point value.
-double convertValue(const uint8_t* data) {
+double convertWindValue(const uint8_t* data) {
 
   return ((data[1]*256)+data[0])/100.0;
 }
@@ -183,7 +174,7 @@ static void awsNotifyCallback(
   bool isNotify) {
 
   Serial.printf("Notify callback for AWS, data length %d ", length);
-  lastAWS = convertValue(pData);
+  lastAWS = convertWindValue(pData);
   Serial.printf("value : %2.1f\n", lastAWS);
 }
 
@@ -196,12 +187,13 @@ static void awdNotifyCallback(
   bool isNotify) {
 
   Serial.printf("Notify callback for AWD, data length %d ", length);
-  double lastAWD = convertValue(pData);
+  double lastAWD = convertWindValue(pData);
   Serial.printf("value : %3.0f\n", lastAWD);
 
   // Send this AWD and the most recent AWS to NMEA2000
   // Note that the Calypso sends the AWD notification immediately after an AWS notification.
   SendN2kWind(lastAWS, lastAWD);
+
 }
 
 
@@ -218,7 +210,7 @@ static void batteryLevelNotifyCallback(
   SendN2kBatteryLevel(batteryLevel);
 }
 
-class MyClientCallback : public BLEClientCallbacks {
+class MyBLEClientCallback : public BLEClientCallbacks {
   void onConnect(BLEClient* pclient) {
     connected = true;
   }
@@ -229,14 +221,14 @@ class MyClientCallback : public BLEClientCallbacks {
   }
 };
 
-bool connectToServer() {
+bool connectToBLEServer() {
     Serial.print("Forming a connection to ");
     Serial.println(myDevice->getAddress().toString().c_str());
     
     BLEClient*  pClient  = BLEDevice::createClient();
     Serial.println(" - Created client");
 
-    pClient->setClientCallbacks(new MyClientCallback());
+    pClient->setClientCallbacks(new MyBLEClientCallback());
 
     // Connect to the remote BLE Server.
     pClient->connect(myDevice);  // if you pass BLEAdvertisedDevice instead of address, it will be recognized type of peer device address (public or private)
@@ -349,6 +341,22 @@ void startScan() {
 }
 
 
+
+//const char* ssid = "xxkalispera";
+//const char* password = "koko44093JTDKB";
+
+const char* ssid     = "calypso";
+const char* password = "1234567890";
+
+const char* hostname = "calypso";
+
+DNSServer dnsServer;
+
+AsyncWebServer webServer(80);
+
+bool wifiRunning = false;
+
+
 void setup() {
 
 
@@ -377,42 +385,38 @@ void setup() {
 
 
 
-
-  WiFi.mode(WIFI_MODE_STA);
-  WiFi.begin(ssid, password);
-  Serial.println("");
-
-  // Wait for connection, up to a point
-
-  int tries = 0;
-  while (tries++ < 20 && WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
-  }
-
-  if (WiFi.status() == WL_CONNECTED) {
-
-    Serial.println("");
-    Serial.print("Connected to ");
-    Serial.println(ssid);
-    Serial.print("IP address: ");
-    Serial.println(WiFi.localIP());
-
-    server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
-      request->send(200, "text/plain", "Hi! I am ESP32 Compass.");
-    });
-
-    server.begin();
-    Serial.println("HTTP server started");
-
-    ElegantOTA.begin(&server);    // Start ElegantOTA
-  } else {
-    Serial.printf("\nCould not access Wifi...\n");
-    WiFi.mode(WIFI_MODE_NULL);
-
-  }
+  // Set WiFi AP Mode
+  WiFi.softAP(ssid, password);
+  IPAddress IP = WiFi.softAPIP();
+  Serial.print("AP IP address: ");
+  Serial.println(IP); // Usually 192.168.4.1
 
 
+	WiFi.softAPsetHostname(hostname);
+
+ 
+  // Connect to Wi-Fi network with SSID and password
+  // Remove the password parameter, if you want the AP (Access Point) to be open
+  
+
+  Serial.print("AP SSID: ");
+  Serial.println(WiFi.softAPSSID());
+  
+  Serial.print("hostname: ");
+  Serial.println(WiFi.softAPgetHostname());
+  
+  dnsServer.start(53, "*", WiFi.softAPIP());
+
+  webServer.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
+    request->send(200, "text/plain", "Hi! I am ESP32 Calypso.");
+  });
+
+  webServer.begin();
+  Serial.println("Web server started");
+
+  ElegantOTA.begin(&webServer);    // Start ElegantOTA
+  
+  wifiRunning = true;
 
   // For NMEA0183 output on ESP32
   Serial2.begin(4800, SERIAL_8N1, 16 /*Rx pin*/, 17 /*Tx pin*/, true /*invert*/);
@@ -489,7 +493,7 @@ void loop() {
   // BLE Server with which we wish to connect.  Now we connect to it.  Once we are 
   // connected we set the connected flag to be true.
   if (doConnect == true) {
-    if (connectToServer()) {
+    if (connectToBLEServer()) {
       Serial.println("We are now connected to the Calyposo BLE Server.");
     } else {
       Serial.println("We have failed to connect to the server; there is nothing more we will do.");
@@ -497,8 +501,7 @@ void loop() {
     doConnect = false;
   }
 
-  
-  
+    
   NMEA2000.ParseMessages();
 
   // Check if SourceAddress has changed (due to address conflict on bus)
@@ -526,11 +529,19 @@ void loop() {
     }
   }
 
-  if (WiFi.status() == WL_CONNECTED) {
+  if (wifiRunning) {
     ElegantOTA.loop();
+    dnsServer.processNextRequest();
   }
 
-  //delay(1000); // Delay a second between loops.
+  
+  // If the Wifi AP has been running for a minute or so and nobody has connected to it,
+  // turn it off.
+  if (wifiRunning && millis() > 60000 && WiFi.softAPgetStationNum() == 0) {
+    WiFi.softAPdisconnect(true);
+    Serial.printf("Wifi AP turned off.\n");
+    wifiRunning = false;
+  }
 
 }
 
