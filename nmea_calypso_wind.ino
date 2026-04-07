@@ -31,8 +31,7 @@
 
 #include "esp_mac.h"
 
-#include <BLEDevice.h>
-
+#include <NimBLEDevice.h>
 
 // Persistent Data
 
@@ -138,24 +137,24 @@ const char *BATTERY_SERVICE = "180F";  // Standard
 const char *BATTERY_LEVEL_CHARACTERISTIC =   "2a19";  // Standard
 
 // The remote service we wish to connect to.
-static BLEUUID windServiceUUID(WIND_SERVICE);
+static NimBLEUUID windServiceUUID(WIND_SERVICE);
 // The characteristic of the remote service we are interested in.
-static BLEUUID    awsUUID(AWS_CHARACTERISTIC);
-static BLEUUID    awdUUID(AWD_CHARACTERISTIC);
+static NimBLEUUID    awsUUID(AWS_CHARACTERISTIC);
+static NimBLEUUID    awdUUID(AWD_CHARACTERISTIC);
 
 // Another remote service we wish to connect to.
-static BLEUUID batteryServiceUUID(BATTERY_SERVICE);
+static NimBLEUUID batteryServiceUUID(BATTERY_SERVICE);
 // The characteristic of the other remote service we are interested in.
-static BLEUUID   batteryLevelUUID(BATTERY_LEVEL_CHARACTERISTIC);
+static NimBLEUUID   batteryLevelUUID(BATTERY_LEVEL_CHARACTERISTIC);
 
 static boolean doConnect = false;
 static boolean connected = false;
-static BLERemoteCharacteristic* pAwsCharacteristic = nullptr;
-static BLERemoteCharacteristic* pAwdCharacteristic = nullptr;
-static BLERemoteCharacteristic* pBatteryLevelCharacteristic = nullptr;
+static NimBLERemoteCharacteristic* pAwsCharacteristic = nullptr;
+static NimBLERemoteCharacteristic* pAwdCharacteristic = nullptr;
+static NimBLERemoteCharacteristic* pBatteryLevelCharacteristic = nullptr;
 
 
-static BLEAdvertisedDevice* myDevice;
+static const BLEAdvertisedDevice* myDevice;
 
 
 double lastAWS = 0.0;   
@@ -168,7 +167,7 @@ double convertWindValue(const uint8_t* data) {
 
 
 static void awsNotifyCallback(
-  BLERemoteCharacteristic* pBLERemoteCharacteristic,
+  NimBLERemoteCharacteristic* pBLERemoteCharacteristic,
   uint8_t* pData,
   size_t length,
   bool isNotify) {
@@ -181,7 +180,7 @@ static void awsNotifyCallback(
 
 
 static void awdNotifyCallback(
-  BLERemoteCharacteristic* pBLERemoteCharacteristic,
+  NimBLERemoteCharacteristic* pBLERemoteCharacteristic,
   uint8_t* pData,
   size_t length,
   bool isNotify) {
@@ -198,7 +197,7 @@ static void awdNotifyCallback(
 
 
 static void batteryLevelNotifyCallback(
-  BLERemoteCharacteristic* pBLERemoteCharacteristic,
+  NimBLERemoteCharacteristic* pBLERemoteCharacteristic,
   uint8_t* pData,
   size_t length,
   bool isNotify) {
@@ -211,11 +210,11 @@ static void batteryLevelNotifyCallback(
 }
 
 class MyBLEClientCallback : public BLEClientCallbacks {
-  void onConnect(BLEClient* pclient) {
+  void onConnect(NimBLEClient* pclient) {
     connected = true;
   }
 
-  void onDisconnect(BLEClient* pclient) {
+  void onDisconnect(NimBLEClient* pclient) {
     connected = false;
     Serial.println("onDisconnect");
   }
@@ -225,7 +224,7 @@ bool connectToBLEServer() {
     Serial.print("Forming a connection to ");
     Serial.println(myDevice->getAddress().toString().c_str());
     
-    BLEClient*  pClient  = BLEDevice::createClient();
+    NimBLEClient*  pClient  = NimBLEDevice::createClient();
     Serial.println(" - Created client");
 
     pClient->setClientCallbacks(new MyBLEClientCallback());
@@ -233,12 +232,12 @@ bool connectToBLEServer() {
     // Connect to the remote BLE Server.
     pClient->connect(myDevice);  // if you pass BLEAdvertisedDevice instead of address, it will be recognized type of peer device address (public or private)
     Serial.println(" - Connected to server");
-    pClient->setMTU(517); //set client to request maximum MTU from server (default is 23 otherwise)
+    // Doug: needed? pClient->setMTU(517); //set client to request maximum MTU from server (default is 23 otherwise)
 
     Serial.printf("Connecting to: %s\n", myDevice->getAddress().toString().c_str());
 
     // Obtain a reference to the service we are after in the remote BLE server.
-    BLERemoteService* pWindService = pClient->getService(windServiceUUID);
+    NimBLERemoteService* pWindService = pClient->getService(windServiceUUID);
     if (pWindService == nullptr) {
       Serial.print("Failed to find wind service UUID: ");
       Serial.println(windServiceUUID.toString().c_str());
@@ -259,7 +258,7 @@ bool connectToBLEServer() {
     Serial.println(" - Found AWS characteristic");   
 
     assert(pAwsCharacteristic->canNotify());
-    pAwsCharacteristic->registerForNotify(awsNotifyCallback);
+    pAwsCharacteristic->subscribe(true, awsNotifyCallback);
 
   
     pAwdCharacteristic = pWindService->getCharacteristic(awdUUID);
@@ -273,13 +272,13 @@ bool connectToBLEServer() {
 
     
     assert(pAwdCharacteristic->canNotify());
-    pAwdCharacteristic->registerForNotify(awdNotifyCallback);
+    pAwdCharacteristic->subscribe(true, awdNotifyCallback);
 
     // Obtain a reference to the battery service and characteristic.
     // Tolerate a missing battery service.
     // BTW, the notification for this data seem to be broken.
 
-    BLERemoteService* pBatteryService = pClient->getService(batteryServiceUUID);
+    NimBLERemoteService* pBatteryService = pClient->getService(batteryServiceUUID);
     if (pBatteryService) {
       Serial.println(" - Found our battery service");
       pBatteryLevelCharacteristic = pBatteryService->getCharacteristic(batteryLevelUUID);
@@ -288,7 +287,7 @@ bool connectToBLEServer() {
         assert(pBatteryLevelCharacteristic->canNotify());
 
         Serial.println(" - Found Battery Level characteristic");
-        pBatteryLevelCharacteristic->registerForNotify(batteryLevelNotifyCallback);
+        pBatteryLevelCharacteristic->subscribe(true, batteryLevelNotifyCallback);
       } else {
         Serial.print("Failed to find battery level characteristic UUID: ");
         Serial.println(batteryLevelUUID.toString().c_str());
@@ -307,24 +306,26 @@ bool connectToBLEServer() {
 /**
  * Scan for BLE servers and find the first one that advertises the service we are looking for.
  */
-class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
+class MyScanCallbacks: public NimBLEScanCallbacks {
  /**
    * Called for each advertising BLE server.
    */
-  void onResult(BLEAdvertisedDevice advertisedDevice) {
+  void onResult(const NimBLEAdvertisedDevice* advertisedDevice) override {
     Serial.print("BLE Advertised Device found: ");
-    Serial.println(advertisedDevice.toString().c_str());
+    Serial.println(advertisedDevice->toString().c_str());
 
     // We have found a device, let us now see if it contains the service we are looking for.
-    if (advertisedDevice.haveServiceUUID() && advertisedDevice.isAdvertisingService(windServiceUUID)) {
+    if (advertisedDevice->isAdvertisingService(windServiceUUID)) {
 
-      BLEDevice::getScan()->stop();
-      myDevice = new BLEAdvertisedDevice(advertisedDevice);
+      NimBLEDevice::getScan()->stop();
+      myDevice = advertisedDevice;
       doConnect = true;
 
     } // Found our server
   } // onResult
-}; // MyAdvertisedDeviceCallbacks
+}; 
+
+MyScanCallbacks scanCallbacks;
 
 
 void startScan() {
@@ -332,12 +333,12 @@ void startScan() {
   // have detected a new device.  Specify that we want active scanning and start the
   // scan to run for 10 seconds.
   Serial.println("Starting scan...");
-  BLEScan* pBLEScan = BLEDevice::getScan();
-  pBLEScan->setAdvertisedDeviceCallbacks(new MyAdvertisedDeviceCallbacks());
+  NimBLEScan* pBLEScan = NimBLEDevice::getScan();
+  pBLEScan->setScanCallbacks(&scanCallbacks);
   pBLEScan->setInterval(1349);
   pBLEScan->setWindow(449);
   pBLEScan->setActiveScan(true);
-  pBLEScan->start(10, false); 
+  pBLEScan->start(10000);   // 10000 milliseconds
 }
 
 
@@ -472,7 +473,7 @@ void setup() {
 
   Serial.print("setup 3\n");
 
-  BLEDevice::init("");
+  NimBLEDevice::init("");
 
 }
 
@@ -484,7 +485,7 @@ void setup() {
 // *****************************************************************************
 void loop() {
 
-  if(!connected && !doConnect && !BLEDevice::getScan()->isScanning()){
+  if(!connected && !doConnect && !NimBLEDevice::getScan()->isScanning()){
      startScan();
   }
 
@@ -520,7 +521,7 @@ void loop() {
     // Read the battery level characteristic (it rarely sends notifications)
     if (pBatteryLevelCharacteristic) {
       
-      int batteryLevel = pBatteryLevelCharacteristic->readUInt8();
+      int batteryLevel = pBatteryLevelCharacteristic->readValue<uint8_t>();
 
       Serial.printf("  Battery level: %d\n", batteryLevel);
 
