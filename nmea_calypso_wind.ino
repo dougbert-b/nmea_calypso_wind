@@ -370,6 +370,7 @@ void startScan() {
 }
 
 
+// Only the onDisconnect() callback is really needed.
 class MyServerCallbacks: public NimBLEServerCallbacks {
 
     void onConnect(NimBLEServer* pServer) 
@@ -394,71 +395,6 @@ class MyServerCallbacks: public NimBLEServerCallbacks {
 MyServerCallbacks serverCallbacks;
 
 
-/** Handler class for server characteristic actions */
-
-class CharacteristicCallbacks: public NimBLECharacteristicCallbacks {
-    void onRead(NimBLECharacteristic* pCharacteristic){
-      Serial.print( devicename );
-      Serial.print(": onRead BLE server ");
-      Serial.print(pCharacteristic->getUUID().toString().c_str());
-      Serial.print(": onRead(), value: ");
-      String remoteHeading = pCharacteristic->getValue().c_str();
-      Serial.println( remoteHeading );
-    };
-
-    void onWrite(NimBLECharacteristic* pCharacteristic) {
-      Serial.print( devicename );
-      Serial.print( ": onWrite ");
-      Serial.print(pCharacteristic->getUUID().toString().c_str());
-      Serial.print(": onWrite(), value: ");
-      Serial.println(pCharacteristic->getValue().c_str());
-    };
-    /** Called before notification or indication is sent,
-     *  the value can be changed here before sending if desired.
-     */
-    void onNotify(NimBLECharacteristic* pCharacteristic) {
-      Serial.print( devicename );
-      Serial.println(": Sending notification to clients");
-    };
-
-    /** The status returned in status is defined in NimBLECharacteristic.h.
-     *  The value returned in code is the NimBLE host return code.
-     */
-    void onStatus(NimBLECharacteristic* pCharacteristic, int code) {
-      String str = ("Notification/Indication code: ");
-      str += code;
-      str += ", ";
-      str += NimBLEUtils::returnCodeToString(code);
-
-      Serial.print( devicename );
-      Serial.print( ": ");
-      Serial.println(str);
-    };
-
-    void onSubscribe(NimBLECharacteristic* pCharacteristic, ble_gap_conn_desc* desc, uint16_t subValue) {
-        String str = "Client ID: ";
-        str += desc->conn_handle;
-        str += " Address: ";
-        str += std::string(NimBLEAddress(desc->peer_ota_addr)).c_str();
-        if(subValue == 0) {
-            str += " Unsubscribed to ";
-        }else if(subValue == 1) {
-            str += " Subscribed to notfications for ";
-        } else if(subValue == 2) {
-            str += " Subscribed to indications for ";
-        } else if(subValue == 3) {
-            str += " Subscribed to notifications and indications for ";
-        }
-        str += std::string(pCharacteristic->getUUID()).c_str();
-
-        Serial.println(str);
-    };
-};
-
-
-CharacteristicCallbacks chrCallbacks;
-
-
 void startBLEServer() {
  // Server set-up
 
@@ -467,13 +403,12 @@ void startBLEServer() {
 
   NimBLEService* pWindService = pServer -> createService(windServiceUUID);
 
+  // Our characterics are all read-only, so no callbacks (e.g. onWrite()) are needed.
   pAwsServerCharacteristic = pWindService -> createCharacteristic( awsUUID, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY);
-  pAwsServerCharacteristic -> setCallbacks( &chrCallbacks );
   pAwsServerCharacteristic -> setValue("\0\0");
   pAwsServerCharacteristic->createDescriptor(NimBLEUUID("2901"), NIMBLE_PROPERTY::READ)->setValue("Wind speed");
 
   pAwdServerCharacteristic = pWindService -> createCharacteristic( awdUUID, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY );
-  pAwdServerCharacteristic -> setCallbacks( &chrCallbacks );
   pAwdServerCharacteristic -> setValue("\0\0");
   pAwdServerCharacteristic->createDescriptor(NimBLEUUID("2901"), NIMBLE_PROPERTY::READ)->setValue("Wind direction");
 
@@ -481,7 +416,6 @@ void startBLEServer() {
   NimBLEService* pBatteryService = pServer -> createService(batteryServiceUUID);
 
   pBatteryServerCharacteristic = pBatteryService -> createCharacteristic( batteryLevelUUID, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY );
-  pBatteryServerCharacteristic -> setCallbacks( &chrCallbacks );
   pBatteryServerCharacteristic -> setValue("\0");
 
   Serial.print( devicename );
