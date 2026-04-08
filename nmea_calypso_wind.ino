@@ -1,4 +1,5 @@
 
+
 /***********************************************************************//**
   An Arduino/ESP32 program to read BLE data from a Calypso wireless wind meter
   and re-transmit it over NMEA2000.
@@ -153,8 +154,12 @@ static NimBLERemoteCharacteristic* pAwsCharacteristic = nullptr;
 static NimBLERemoteCharacteristic* pAwdCharacteristic = nullptr;
 static NimBLERemoteCharacteristic* pBatteryLevelCharacteristic = nullptr;
 
-
 static const BLEAdvertisedDevice* myDevice;
+
+
+static NimBLECharacteristic* pAwsServerCharacteristic = nullptr;
+static NimBLECharacteristic* pAwdServerCharacteristic = nullptr;
+static NimBLECharacteristic* pBatteryServerCharacteristic = nullptr;
 
 
 double lastAWS = 0.0;   
@@ -175,6 +180,12 @@ static void awsNotifyCallback(
   Serial.printf("Notify callback for AWS, data length %d ", length);
   lastAWS = convertWindValue(pData);
   Serial.printf("value : %2.1f\n", lastAWS);
+
+  // If our relay server is running, pass on the new value
+  if (pAwsServerCharacteristic) {
+    pAwsServerCharacteristic->setValue(pData, length);
+    pAwsServerCharacteristic->notify();
+  }
 }
 
 
@@ -192,7 +203,13 @@ static void awdNotifyCallback(
   // Send this AWD and the most recent AWS to NMEA2000
   // Note that the Calypso sends the AWD notification immediately after an AWS notification.
   SendN2kWind(lastAWS, lastAWD);
+  
+  // If our relay server is running, pass on the new value
+  if (pAwdServerCharacteristic) {
+    pAwdServerCharacteristic->setValue(pData, length);
+    pAwdServerCharacteristic->notify();
 
+  }
 }
 
 
@@ -207,6 +224,12 @@ static void batteryLevelNotifyCallback(
   Serial.printf("value : %d\n", batteryLevel);
 
   SendN2kBatteryLevel(batteryLevel);
+
+  // If our relay server is running, pass on the new value
+  if (pBatteryServerCharacteristic) {
+    pBatteryServerCharacteristic->setValue(pData, length);
+    pBatteryServerCharacteristic->notify();
+ }
 }
 
 class MyBLEClientCallback : public BLEClientCallbacks {
@@ -220,6 +243,11 @@ class MyBLEClientCallback : public BLEClientCallbacks {
   }
 };
 
+MyBLEClientCallback clientCallbacks;
+
+
+String devicename = "CalypsoRelay";
+
 bool connectToBLEServer() {
     Serial.print("Forming a connection to ");
     Serial.println(myDevice->getAddress().toString().c_str());
@@ -227,7 +255,7 @@ bool connectToBLEServer() {
     NimBLEClient*  pClient  = NimBLEDevice::createClient();
     Serial.println(" - Created client");
 
-    pClient->setClientCallbacks(new MyBLEClientCallback());
+    pClient->setClientCallbacks(&clientCallbacks);
 
     // Connect to the remote BLE Server.
     pClient->connect(myDevice);  // if you pass BLEAdvertisedDevice instead of address, it will be recognized type of peer device address (public or private)
@@ -341,6 +369,130 @@ void startScan() {
   pBLEScan->start(10000);   // 10000 milliseconds
 }
 
+
+class MyServerCallbacks: public NimBLEServerCallbacks {
+
+    void onConnect(NimBLEServer* pServer) 
+    {
+      Serial.print( devicename );
+      Serial.println(": Server connected");
+    };
+
+    void onDisconnect(NimBLEServer* pServer) 
+    {
+      Serial.print( devicename );
+      Serial.println(": Client disconnected, starting advertising");
+      NimBLEDevice::startAdvertising();
+    };
+
+    void onMTUChange(uint16_t MTU, ble_gap_conn_desc* desc) {
+      Serial.print( devicename );
+      Serial.printf(": BLE MTU updated: %u for connection ID: %u\n", MTU, desc->conn_handle);
+    };
+};
+
+MyServerCallbacks serverCallbacks;
+
+
+/** Handler class for server characteristic actions */
+
+class CharacteristicCallbacks: public NimBLECharacteristicCallbacks {
+    void onRead(NimBLECharacteristic* pCharacteristic){
+      Serial.print( devicename );
+      Serial.print(": onRead BLE server ");
+      Serial.print(pCharacteristic->getUUID().toString().c_str());
+      Serial.print(": onRead(), value: ");
+      String remoteHeading = pCharacteristic->getValue().c_str();
+      Serial.println( remoteHeading );
+    };
+
+    void onWrite(NimBLECharacteristic* pCharacteristic) {
+      Serial.print( devicename );
+      Serial.print( ": onWrite ");
+      Serial.print(pCharacteristic->getUUID().toString().c_str());
+      Serial.print(": onWrite(), value: ");
+      Serial.println(pCharacteristic->getValue().c_str());
+    };
+    /** Called before notification or indication is sent,
+     *  the value can be changed here before sending if desired.
+     */
+    void onNotify(NimBLECharacteristic* pCharacteristic) {
+      Serial.print( devicename );
+      Serial.println(": Sending notification to clients");
+    };
+
+    /** The status returned in status is defined in NimBLECharacteristic.h.
+     *  The value returned in code is the NimBLE host return code.
+     */
+    void onStatus(NimBLECharacteristic* pCharacteristic, int code) {
+      String str = ("Notification/Indication code: ");
+      str += code;
+      str += ", ";
+      str += NimBLEUtils::returnCodeToString(code);
+
+      Serial.print( devicename );
+      Serial.print( ": ");
+      Serial.println(str);
+    };
+
+    void onSubscribe(NimBLECharacteristic* pCharacteristic, ble_gap_conn_desc* desc, uint16_t subValue) {
+        String str = "Client ID: ";
+        str += desc->conn_handle;
+        str += " Address: ";
+        str += std::string(NimBLEAddress(desc->peer_ota_addr)).c_str();
+        if(subValue == 0) {
+            str += " Unsubscribed to ";
+        }else if(subValue == 1) {
+            str += " Subscribed to notfications for ";
+        } else if(subValue == 2) {
+            str += " Subscribed to indications for ";
+        } else if(subValue == 3) {
+            str += " Subscribed to notifications and indications for ";
+        }
+        str += std::string(pCharacteristic->getUUID()).c_str();
+
+        Serial.println(str);
+    };
+};
+
+
+CharacteristicCallbacks chrCallbacks;
+
+
+void startBLEServer() {
+ // Server set-up
+
+  NimBLEServer *pServer = NimBLEDevice::createServer();
+  pServer->setCallbacks(&serverCallbacks);
+
+  NimBLEService* pWindService = pServer -> createService(windServiceUUID);
+
+  pAwsServerCharacteristic = pWindService -> createCharacteristic( awsUUID, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY);
+  pAwsServerCharacteristic -> setCallbacks( &chrCallbacks );
+  pAwsServerCharacteristic -> setValue("\0\0");
+  pAwsServerCharacteristic->createDescriptor(NimBLEUUID("2901"), NIMBLE_PROPERTY::READ)->setValue("Wind speed");
+
+  pAwdServerCharacteristic = pWindService -> createCharacteristic( awdUUID, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY );
+  pAwdServerCharacteristic -> setCallbacks( &chrCallbacks );
+  pAwdServerCharacteristic -> setValue("\0\0");
+  pAwdServerCharacteristic->createDescriptor(NimBLEUUID("2901"), NIMBLE_PROPERTY::READ)->setValue("Wind direction");
+
+
+  NimBLEService* pBatteryService = pServer -> createService(batteryServiceUUID);
+
+  pBatteryServerCharacteristic = pBatteryService -> createCharacteristic( batteryLevelUUID, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY );
+  pBatteryServerCharacteristic -> setCallbacks( &chrCallbacks );
+  pBatteryServerCharacteristic -> setValue("\0");
+
+  Serial.print( devicename );
+  Serial.println(": Server advertising starts");
+
+  NimBLEAdvertising* pAdvertising = NimBLEDevice::getAdvertising();
+  pAdvertising->setName(devicename.c_str());
+  pAdvertising->addServiceUUID(pWindService -> getUUID());
+  pAdvertising->enableScanResponse(true);
+  pAdvertising->start();
+}
 
 
 //const char* ssid = "xxkalispera";
@@ -473,8 +625,9 @@ void setup() {
 
   Serial.print("setup 3\n");
 
-  NimBLEDevice::init("");
+  NimBLEDevice::init(devicename.c_str());
 
+  startBLEServer();
 }
 
 
@@ -521,12 +674,17 @@ void loop() {
     // Read the battery level characteristic (it rarely sends notifications)
     if (pBatteryLevelCharacteristic) {
       
-      int batteryLevel = pBatteryLevelCharacteristic->readValue<uint8_t>();
+      uint8_t batteryLevel = pBatteryLevelCharacteristic->readValue<uint8_t>();
 
       Serial.printf("  Battery level: %d\n", batteryLevel);
 
       // Send this battery level to NMEA2000
       SendN2kBatteryLevel(batteryLevel);
+
+      // If our relay server is running, pass on the new value
+      if (pBatteryServerCharacteristic) {
+        pBatteryServerCharacteristic->setValue(&batteryLevel, sizeof(batteryLevel));
+      }
     }
   }
 
