@@ -137,6 +137,9 @@ const char *AWD_CHARACTERISTIC = "2A73";   // Industry standard
 const char *BATTERY_SERVICE = "180F";  // Standard
 const char *BATTERY_LEVEL_CHARACTERISTIC =   "2a19";  // Standard
 
+// The Calypso advertises this service, but does not seem to implement it.
+const char *CALYPSO_MYSTERY_SERVICE = "8ec90001-f315-4f60-9fb8-838830daea50";
+
 // The remote service we wish to connect to.
 static NimBLEUUID windServiceUUID(WIND_SERVICE);
 // The characteristic of the remote service we are interested in.
@@ -246,7 +249,6 @@ class MyBLEClientCallback : public BLEClientCallbacks {
 MyBLEClientCallback clientCallbacks;
 
 
-String devicename = "CalypsoRelay";
 
 bool connectToBLEServer() {
     Serial.print("Forming a connection to ");
@@ -373,22 +375,20 @@ void startScan() {
 // Only the onDisconnect() callback is really needed.
 class MyServerCallbacks: public NimBLEServerCallbacks {
 
-    void onConnect(NimBLEServer* pServer) 
+    void onConnect(NimBLEServer* pServer, NimBLEConnInfo& connInfo) override
     {
-      Serial.print( devicename );
-      Serial.println(": Server connected");
+      Serial.println("Server: Client connected");
     };
 
-    void onDisconnect(NimBLEServer* pServer) 
+    void onDisconnect(NimBLEServer* pServer, NimBLEConnInfo& connInfo, int reason) override
     {
-      Serial.print( devicename );
-      Serial.println(": Client disconnected, starting advertising");
+      Serial.println("Server: Client disconnected, starting advertising");
       NimBLEDevice::startAdvertising();
     };
 
-    void onMTUChange(uint16_t MTU, ble_gap_conn_desc* desc) {
-      Serial.print( devicename );
-      Serial.printf(": BLE MTU updated: %u for connection ID: %u\n", MTU, desc->conn_handle);
+    void onMTUChange(uint16_t MTU, NimBLEConnInfo& connInfo) override
+    {
+      Serial.printf("Server: MTU updated: %u for connection ID: %u\n", MTU, connInfo.getConnHandle());
     };
 };
 
@@ -418,12 +418,13 @@ void startBLEServer() {
   pBatteryServerCharacteristic = pBatteryService -> createCharacteristic( batteryLevelUUID, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY );
   pBatteryServerCharacteristic -> setValue("\0");
 
-  Serial.print( devicename );
-  Serial.println(": Server advertising starts");
+  Serial.println("Server advertising starts");
 
+  // We have to spoof a real Calypso Portable Mini, so thhat apps will connect to us.
   NimBLEAdvertising* pAdvertising = NimBLEDevice::getAdvertising();
-  pAdvertising->setName(devicename.c_str());
+  pAdvertising->setName("ULTRASONIC");
   pAdvertising->addServiceUUID(pWindService -> getUUID());
+  pAdvertising->addServiceUUID(CALYPSO_MYSTERY_SERVICE);
   pAdvertising->enableScanResponse(true);
   pAdvertising->start();
 }
@@ -559,7 +560,7 @@ void setup() {
 
   Serial.print("setup 3\n");
 
-  NimBLEDevice::init(devicename.c_str());
+  NimBLEDevice::init("RELAY");
 
   startBLEServer();
 }
