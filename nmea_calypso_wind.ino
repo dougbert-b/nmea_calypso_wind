@@ -117,7 +117,10 @@ void SendN2kBatteryLevel(int batteryLevel) {
 // Calypso-defined values
 static NimBLEUUID CALYPSO_DATA_SERVICE("180D");      // Unfortunately the same as the standard heart rate service.
 static NimBLEUUID WIND_DATA_CHARACTERISTIC("2A39");  // Unfortunately the same as the standard heart rate control point
+static NimBLEUUID DATA_RATE_CHARACTERISTIC("A002");  // We ignore this, but we need to expose it for the clients to work.
+static NimBLEUUID PITCH_CHARACTERISTIC("A003");  // We ignore this, but we need to expose it for the clients to work.
 
+// These services and characteristics provide the same wind/battery data, in a more user-friendly way.
 static NimBLEUUID WIND_SERVICE("181A");        // Industry standard
 static NimBLEUUID AWS_CHARACTERISTIC("2A72");  // Industry standard
 static NimBLEUUID AWD_CHARACTERISTIC("2A73");  // Industry standard
@@ -425,8 +428,18 @@ void startBLEServer() {
 
   // Our characterics are all read-only, so no callbacks (e.g. onWrite()) are needed.
   pWindDataServerCharacteristic = pCalypsoDataService->createCharacteristic(WIND_DATA_CHARACTERISTIC, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY);
-  pWindDataServerCharacteristic->setValue("\0\0");
+  pWindDataServerCharacteristic->setValue("\0\0\0\0\0\0\0\0\0\0");
   pWindDataServerCharacteristic->createDescriptor(NimBLEUUID("2901"), NIMBLE_PROPERTY::READ)->setValue("Principal");
+
+  // Create two r/w characteristics that the clients expect to see, but we ignore
+  NimBLECharacteristic *chr = pCalypsoDataService->createCharacteristic(DATA_RATE_CHARACTERISTIC, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE);
+  chr->setValue(uint8_t(1));
+  chr->createDescriptor(NimBLEUUID("2901"), NIMBLE_PROPERTY::READ)->setValue("Data rate");
+
+  chr = pCalypsoDataService->createCharacteristic(PITCH_CHARACTERISTIC, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE);
+  chr->setValue(uint8_t(0));
+  chr->createDescriptor(NimBLEUUID("2901"), NIMBLE_PROPERTY::READ)->setValue("Activate clinometer and eCompass");
+
 
 
   // We relay the wind service for user convenience - it is redundant with the calypso data service.
