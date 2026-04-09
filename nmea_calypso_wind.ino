@@ -1,9 +1,7 @@
 
+//  An Arduino/ESP32 program to read BLE data from a Calypso wireless wind meter
+//  and re-transmit it over NMEA2000.
 
-/***********************************************************************//**
-  An Arduino/ESP32 program to read BLE data from a Calypso wireless wind meter
-  and re-transmit it over NMEA2000.
-*/
 
 #include <Arduino.h>
 
@@ -17,7 +15,7 @@
 
 
 #define ESP32_CAN_TX_PIN GPIO_NUM_3  // Set CAN TX port   This is the pin labeled D2 on the Seeed Xiao ESP32S3 board
-#define ESP32_CAN_RX_PIN GPIO_NUM_2   // Set CAN RX port  This is the pin labeled D on the Seeed Xiao ESP32S3 board
+#define ESP32_CAN_RX_PIN GPIO_NUM_2  // Set CAN RX port  This is the pin labeled D on the Seeed Xiao ESP32S3 board
 
 #include <NMEA0183.h>
 #include <NMEA0183Msg.h>
@@ -44,7 +42,7 @@ public:
   int node_address;  // For NMEA2K, default is 34
 
   void begin() {
-    prefs.begin("calypso_prefs");  
+    prefs.begin("calypso_prefs");
     prefs.getBytes("calypso", this, sizeof(*this));
   }
 
@@ -69,23 +67,12 @@ tNMEA0183* NMEA0183 = nullptr;
 
 
 // List here the N2K messages we will transmit.
-const unsigned long transmitMessages[] PROGMEM={130306L, 127506L, 0};   // Apparent Wind and DC Status messages
+const unsigned long transmitMessages[] PROGMEM = { 130306L, 127506L, 0 };  // Apparent Wind and DC Status messages
 
-
-// Define schedulers for some N2K messages. Define schedulers here disabled. Schedulers will be enabled
-// on OnN2kOpen so they will be synchronized with system.
-// We use own scheduler for each message so that each can have different offset and period.
-// Setup periods according PGN definition (see comments on IsDefaultSingleFrameMessage and
-// IsDefaultFastPacketMessage) and message first start offsets. Use a bit different offset for
-// each message so they will not be sent at same time.
-
-tN2kSyncScheduler BatteryLevelScheduler(false,2000,510);
-// Send battery level every 2 seconds.  The value displayed on the Gpsmap ages out after ~3 seconds.
 
 
 void OnN2kOpen() {
-  // Start schedulers now.
-  BatteryLevelScheduler.UpdateNextTime();
+  // Nothing to do
 }
 
 
@@ -97,81 +84,107 @@ void SendN2kWind(double windSpeed, double windAngle) {
   digitalWrite(LED_BUILTIN, LOW);  // Indicate NMEA data transmission
 
   tN2kMsg N2kMsg;
- 
+
   Serial.printf("Transmitting NMEA data: AWS %2.1f  AWD %3.0f\n", windSpeed, windAngle);
 
   SetN2kWindSpeed(N2kMsg, 1, windSpeed, DegToRad(windAngle), N2kWind_Apprent);
   NMEA2000.SendMsg(N2kMsg);
-  
+
   tNMEA0183Msg NMEA0183Msg;
-  if ( NMEA0183SetMWV(NMEA0183Msg, DegToRad(windAngle), NMEA0183Wind_Apparent, windSpeed) ) {
+  if (NMEA0183SetMWV(NMEA0183Msg, DegToRad(windAngle), NMEA0183Wind_Apparent, windSpeed)) {
     NMEA0183->SendMessage(NMEA0183Msg);
   }
-  
-  delay(5); //allow LED to blink and the cpu to switch to other tasks
-  digitalWrite(LED_BUILTIN, HIGH);
 
+  delay(5);  //allow LED to blink and the cpu to switch to other tasks
+  digitalWrite(LED_BUILTIN, HIGH);
 }
 
 
 // *****************************************************************************
 void SendN2kBatteryLevel(int batteryLevel) {
-  
+
   tN2kMsg N2kMsg;
- 
+
   Serial.printf("Transmitting NMEA data: Battery Level %d\n", batteryLevel);
 
-  SetN2kDCStatus(N2kMsg, 1, 1, N2kDCt_Battery, batteryLevel, 100 /* state of health % */, 999.9 /* Remaining time */); 
+  SetN2kDCStatus(N2kMsg, 1, 1, N2kDCt_Battery, batteryLevel, 100 /* state of health % */, 999.9 /* Remaining time */);
   NMEA2000.SendMsg(N2kMsg);
-  
 }
 
 
 
 
 // Calypso-defined values
-const char *WIND_SERVICE = "181A";    // Industry standard
-const char *AWS_CHARACTERISTIC = "2A72";   // Industry standard
-const char *AWD_CHARACTERISTIC = "2A73";   // Industry standard
+static NimBLEUUID CALYPSO_DATA_SERVICE("180D");      // Unfortunately the same as the standard heart rate service.
+static NimBLEUUID WIND_DATA_CHARACTERISTIC("2A39");  // Unfortunately the same as the standard heart rate control point
 
-const char *BATTERY_SERVICE = "180F";  // Standard
-const char *BATTERY_LEVEL_CHARACTERISTIC =   "2a19";  // Standard
+static NimBLEUUID WIND_SERVICE("181A");        // Industry standard
+static NimBLEUUID AWS_CHARACTERISTIC("2A72");  // Industry standard
+static NimBLEUUID AWD_CHARACTERISTIC("2A73");  // Industry standard
+
+static NimBLEUUID BATTERY_SERVICE("180F");               // Standard
+static NimBLEUUID BATTERY_LEVEL_CHARACTERISTIC("2a19");  // Standard
 
 // The Calypso advertises this service, but does not seem to implement it.
-const char *CALYPSO_MYSTERY_SERVICE = "8ec90001-f315-4f60-9fb8-838830daea50";
+static NimBLEUUID CALYPSO_MYSTERY_SERVICE("8ec90001-f315-4f60-9fb8-838830daea50");
 
-// The remote service we wish to connect to.
-static NimBLEUUID windServiceUUID(WIND_SERVICE);
-// The characteristic of the remote service we are interested in.
-static NimBLEUUID    awsUUID(AWS_CHARACTERISTIC);
-static NimBLEUUID    awdUUID(AWD_CHARACTERISTIC);
 
-// Another remote service we wish to connect to.
-static NimBLEUUID batteryServiceUUID(BATTERY_SERVICE);
-// The characteristic of the other remote service we are interested in.
-static NimBLEUUID   batteryLevelUUID(BATTERY_LEVEL_CHARACTERISTIC);
 
 static boolean doConnect = false;
 static boolean connected = false;
+
+static NimBLERemoteCharacteristic* pWindDataCharacteristic = nullptr;
+
 static NimBLERemoteCharacteristic* pAwsCharacteristic = nullptr;
 static NimBLERemoteCharacteristic* pAwdCharacteristic = nullptr;
 static NimBLERemoteCharacteristic* pBatteryLevelCharacteristic = nullptr;
 
 static const BLEAdvertisedDevice* myDevice;
 
-
+static NimBLECharacteristic* pWindDataServerCharacteristic = nullptr;
 static NimBLECharacteristic* pAwsServerCharacteristic = nullptr;
 static NimBLECharacteristic* pAwdServerCharacteristic = nullptr;
 static NimBLECharacteristic* pBatteryServerCharacteristic = nullptr;
 
 
-double lastAWS = 0.0;   
-
 // Convert from integral hundredths to a proper floating-point value.
 double convertWindValue(const uint8_t* data) {
 
-  return ((data[1]*256)+data[0])/100.0;
+  return ((data[1] * 256) + data[0]) / 100.0;
 }
+
+
+static void windDataNotifyCallback(
+  NimBLERemoteCharacteristic* pBLERemoteCharacteristic,
+  uint8_t* pData,
+  size_t length,
+  bool isNotify) {
+
+  Serial.printf("Notify callback for Calypso wind data, data length %d ", length);
+  assert(length >= 10);
+
+  double AWS = (pData[1] << 8 | pData[0]) * 0.01;
+  double AWD  = (pData[3] << 8 | pData[2]); 
+	uint8_t batt = pData[5];  // pData[4] seems to be a 0-10 battery level.
+
+  Serial.printf("values : AWS %2.1f  AED: %3.0f  batt  %d\n", AWS, AWD, batt);
+
+  
+  // Send the data to NMEA2000
+  SendN2kWind(AWS, AWD);
+  SendN2kBatteryLevel(batt);
+
+  // If our relay server is running, pass on the new value
+  if (pWindDataServerCharacteristic) {
+    pWindDataServerCharacteristic->setValue(pData, length);
+    pWindDataServerCharacteristic->notify();
+  }
+
+  if (pBatteryServerCharacteristic) {
+    pBatteryServerCharacteristic->setValue(&batt, sizeof(batt));
+  }
+}
+
 
 
 static void awsNotifyCallback(
@@ -181,8 +194,8 @@ static void awsNotifyCallback(
   bool isNotify) {
 
   Serial.printf("Notify callback for AWS, data length %d ", length);
-  lastAWS = convertWindValue(pData);
-  Serial.printf("value : %2.1f\n", lastAWS);
+  double AWS = convertWindValue(pData);
+  Serial.printf("value : %2.1f\n", AWS);
 
   // If our relay server is running, pass on the new value
   if (pAwsServerCharacteristic) {
@@ -200,21 +213,16 @@ static void awdNotifyCallback(
   bool isNotify) {
 
   Serial.printf("Notify callback for AWD, data length %d ", length);
-  double lastAWD = convertWindValue(pData);
-  Serial.printf("value : %3.0f\n", lastAWD);
+  double AWD = convertWindValue(pData);
+  Serial.printf("value : %3.0f\n", AWD);
 
-  // Send this AWD and the most recent AWS to NMEA2000
-  // Note that the Calypso sends the AWD notification immediately after an AWS notification.
-  SendN2kWind(lastAWS, lastAWD);
   
   // If our relay server is running, pass on the new value
   if (pAwdServerCharacteristic) {
     pAwdServerCharacteristic->setValue(pData, length);
     pAwdServerCharacteristic->notify();
-
   }
 }
-
 
 static void batteryLevelNotifyCallback(
   NimBLERemoteCharacteristic* pBLERemoteCharacteristic,
@@ -226,14 +234,13 @@ static void batteryLevelNotifyCallback(
   int batteryLevel = pData[0];
   Serial.printf("value : %d\n", batteryLevel);
 
-  SendN2kBatteryLevel(batteryLevel);
-
   // If our relay server is running, pass on the new value
   if (pBatteryServerCharacteristic) {
     pBatteryServerCharacteristic->setValue(pData, length);
     pBatteryServerCharacteristic->notify();
- }
+  }
 }
+
 
 class MyBLEClientCallback : public BLEClientCallbacks {
   void onConnect(NimBLEClient* pclient) {
@@ -251,109 +258,125 @@ MyBLEClientCallback clientCallbacks;
 
 
 bool connectToBLEServer() {
-    Serial.print("Forming a connection to ");
-    Serial.println(myDevice->getAddress().toString().c_str());
-    
-    NimBLEClient*  pClient  = NimBLEDevice::createClient();
-    Serial.println(" - Created client");
+  Serial.print("Forming a connection to ");
+  Serial.println(myDevice->getAddress().toString().c_str());
 
-    pClient->setClientCallbacks(&clientCallbacks);
+  NimBLEClient* pClient = NimBLEDevice::createClient();
+  Serial.println(" - Created client");
 
-    // Connect to the remote BLE Server.
-    pClient->connect(myDevice);  // if you pass BLEAdvertisedDevice instead of address, it will be recognized type of peer device address (public or private)
-    Serial.println(" - Connected to server");
-    // Doug: needed? pClient->setMTU(517); //set client to request maximum MTU from server (default is 23 otherwise)
+  pClient->setClientCallbacks(&clientCallbacks);
 
-    Serial.printf("Connecting to: %s\n", myDevice->getAddress().toString().c_str());
+  // Connect to the remote BLE Server.
+  pClient->connect(myDevice);  // if you pass BLEAdvertisedDevice instead of address, it will be recognized type of peer device address (public or private)
+  Serial.println(" - Connected to server");
+  // Doug: needed? pClient->setMTU(517); //set client to request maximum MTU from server (default is 23 otherwise)
 
-    // Obtain a reference to the service we are after in the remote BLE server.
-    NimBLERemoteService* pWindService = pClient->getService(windServiceUUID);
-    if (pWindService == nullptr) {
-      Serial.print("Failed to find wind service UUID: ");
-      Serial.println(windServiceUUID.toString().c_str());
-      pClient->disconnect();
-      return false;
-    }
-    Serial.println(" - Found our service");
+  Serial.printf("Connecting to: %s\n", myDevice->getAddress().toString().c_str());
 
- 
-    // Obtain references to the characteristics in the service of the remote BLE server.
-    pAwsCharacteristic = pWindService->getCharacteristic(awsUUID);
-    if (pAwsCharacteristic == nullptr) {
-      Serial.print("Failed to find AWS characteristic UUID: ");
-      Serial.println(awsUUID.toString().c_str());
-      pClient->disconnect();
-      return false;
-    }
-    Serial.println(" - Found AWS characteristic");   
+  // Obtain a reference to the service we are after in the remote BLE server.
+  NimBLERemoteService* pCalypsoService = pClient->getService(CALYPSO_DATA_SERVICE);
+  if (pCalypsoService == nullptr) {
+    Serial.print("Failed to find data service UUID: ");
+    Serial.println(CALYPSO_DATA_SERVICE.toString().c_str());
+    pClient->disconnect();
+    return false;
+  }
+  Serial.println(" - Found our service");
 
-    assert(pAwsCharacteristic->canNotify());
-    pAwsCharacteristic->subscribe(true, awsNotifyCallback);
+  // Obtain the data characteristic in the service of the remote BLE server.
+  pWindDataCharacteristic = pCalypsoService->getCharacteristic(WIND_DATA_CHARACTERISTIC);
+  if (!pWindDataCharacteristic) {
+    Serial.print("Failed to find wind data characteristic UUID: ");
+    Serial.println(WIND_DATA_CHARACTERISTIC.toString().c_str());
+    pClient->disconnect();
+    return false;
+  }
+  assert(pWindDataCharacteristic->canNotify());
+  pWindDataCharacteristic->subscribe(true, windDataNotifyCallback);
+  Serial.println(" - Found wind data characteristic");
 
-  
-    pAwdCharacteristic = pWindService->getCharacteristic(awdUUID);
-    if (pAwdCharacteristic == nullptr) {
-      Serial.print("Failed to find AWD characteristic UUID: ");
-      Serial.println(awdUUID.toString().c_str());
-      pClient->disconnect();
-      return false;
-    }
-    Serial.println(" - Found AWD characteristic");
 
-    
-    assert(pAwdCharacteristic->canNotify());
-    pAwdCharacteristic->subscribe(true, awdNotifyCallback);
 
-    // Obtain a reference to the battery service and characteristic.
-    // Tolerate a missing battery service.
-    // BTW, the notification for this data seem to be broken.
+  // Obtain references to other interesting characteristics in the service of the remote BLE server.
+  // These are not needed for NMEA2000 or relay support, just user convenience.
+  NimBLERemoteService* pWindService = pClient->getService(WIND_SERVICE);
 
-    NimBLERemoteService* pBatteryService = pClient->getService(batteryServiceUUID);
-    if (pBatteryService) {
-      Serial.println(" - Found our battery service");
-      pBatteryLevelCharacteristic = pBatteryService->getCharacteristic(batteryLevelUUID);
-      if (pBatteryLevelCharacteristic) {
-        assert(pBatteryLevelCharacteristic->canRead());
-        assert(pBatteryLevelCharacteristic->canNotify());
+  pAwsCharacteristic = pWindService->getCharacteristic(AWS_CHARACTERISTIC);
+  if (pAwsCharacteristic == nullptr) {
+    Serial.print("Failed to find AWS characteristic UUID: ");
+    Serial.println(AWS_CHARACTERISTIC.toString().c_str());
+    pClient->disconnect();
+    return false;
+  }
+  Serial.println(" - Found AWS characteristic");
 
-        Serial.println(" - Found Battery Level characteristic");
-        pBatteryLevelCharacteristic->subscribe(true, batteryLevelNotifyCallback);
-      } else {
-        Serial.print("Failed to find battery level characteristic UUID: ");
-        Serial.println(batteryLevelUUID.toString().c_str());
-      }
+  assert(pAwsCharacteristic->canNotify());
+  pAwsCharacteristic->subscribe(true, awsNotifyCallback);
+
+
+  pAwdCharacteristic = pWindService->getCharacteristic(AWD_CHARACTERISTIC);
+  if (pAwdCharacteristic == nullptr) {
+    Serial.print("Failed to find AWD characteristic UUID: ");
+    Serial.println(AWD_CHARACTERISTIC.toString().c_str());
+    pClient->disconnect();
+    return false;
+  }
+  Serial.println(" - Found AWD characteristic");
+
+  assert(pAwdCharacteristic->canNotify());
+  pAwdCharacteristic->subscribe(true, awdNotifyCallback);
+
+  // Obtain a reference to the battery service and characteristic.
+  // Tolerate a missing battery service.
+  // BTW, the notification for this data seem to be broken.
+
+  NimBLERemoteService* pBatteryService = pClient->getService(BATTERY_SERVICE);
+  if (pBatteryService) {
+    Serial.println(" - Found our battery service");
+    pBatteryLevelCharacteristic = pBatteryService->getCharacteristic(BATTERY_LEVEL_CHARACTERISTIC);
+    if (pBatteryLevelCharacteristic) {
+      assert(pBatteryLevelCharacteristic->canNotify());
+
+      Serial.println(" - Found Battery Level characteristic");
+      pBatteryLevelCharacteristic->subscribe(true, batteryLevelNotifyCallback);
     } else {
-      Serial.print("Failed to find battery service UUID: ");
-      Serial.println(batteryServiceUUID.toString().c_str());
+      Serial.print("Failed to find battery level characteristic UUID: ");
+      Serial.println(BATTERY_LEVEL_CHARACTERISTIC.toString().c_str());
     }
+  } else {
+    Serial.print("Failed to find battery service UUID: ");
+    Serial.println(BATTERY_SERVICE.toString().c_str());
+  }
 
 
-    connected = true;
-    return true;
+  connected = true;
+  return true;
 }
 
 
 /**
  * Scan for BLE servers and find the first one that advertises the service we are looking for.
  */
-class MyScanCallbacks: public NimBLEScanCallbacks {
- /**
+class MyScanCallbacks : public NimBLEScanCallbacks {
+  /**
    * Called for each advertising BLE server.
    */
   void onResult(const NimBLEAdvertisedDevice* advertisedDevice) override {
     Serial.print("BLE Advertised Device found: ");
     Serial.println(advertisedDevice->toString().c_str());
 
-    // We have found a device, let us now see if it contains the service we are looking for.
-    if (advertisedDevice->isAdvertisingService(windServiceUUID)) {
+    // We have found a device, let us now see if it is a Calypso wind meter.
+    if (advertisedDevice->getName() == "ULTRASONIC" && advertisedDevice->isAdvertisingService(WIND_SERVICE)) {
+
+      Serial.println("Found device, stopping scan...");
 
       NimBLEDevice::getScan()->stop();
       myDevice = advertisedDevice;
       doConnect = true;
 
-    } // Found our server
-  } // onResult
-}; 
+    }  // Found our server
+  }    // onResult
+};
 
 MyScanCallbacks scanCallbacks;
 
@@ -368,72 +391,76 @@ void startScan() {
   pBLEScan->setInterval(1349);
   pBLEScan->setWindow(449);
   pBLEScan->setActiveScan(true);
-  pBLEScan->start(10000);   // 10000 milliseconds
+  pBLEScan->start(10000);  // 10000 milliseconds
 }
 
 
 // Only the onDisconnect() callback is really needed.
-class MyServerCallbacks: public NimBLEServerCallbacks {
+class MyServerCallbacks : public NimBLEServerCallbacks {
 
-    void onConnect(NimBLEServer* pServer, NimBLEConnInfo& connInfo) override
-    {
-      Serial.println("Server: Client connected");
-    };
+  void onConnect(NimBLEServer* pServer, NimBLEConnInfo& connInfo) override {
+    Serial.println("Server: Client connected");
+  };
 
-    void onDisconnect(NimBLEServer* pServer, NimBLEConnInfo& connInfo, int reason) override
-    {
-      Serial.println("Server: Client disconnected, starting advertising");
-      NimBLEDevice::startAdvertising();
-    };
+  void onDisconnect(NimBLEServer* pServer, NimBLEConnInfo& connInfo, int reason) override {
+    Serial.println("Server: Client disconnected, starting advertising");
+    NimBLEDevice::startAdvertising();
+  };
 
-    void onMTUChange(uint16_t MTU, NimBLEConnInfo& connInfo) override
-    {
-      Serial.printf("Server: MTU updated: %u for connection ID: %u\n", MTU, connInfo.getConnHandle());
-    };
+  void onMTUChange(uint16_t MTU, NimBLEConnInfo& connInfo) override {
+    Serial.printf("Server: MTU updated: %u for connection ID: %u\n", MTU, connInfo.getConnHandle());
+  };
 };
 
 MyServerCallbacks serverCallbacks;
 
 
 void startBLEServer() {
- // Server set-up
+  // Server set-up
 
-  NimBLEServer *pServer = NimBLEDevice::createServer();
+  NimBLEServer* pServer = NimBLEDevice::createServer();
   pServer->setCallbacks(&serverCallbacks);
 
-  NimBLEService* pWindService = pServer -> createService(windServiceUUID);
+  NimBLEService* pCalypsoDataService = pServer->createService(CALYPSO_DATA_SERVICE);
 
   // Our characterics are all read-only, so no callbacks (e.g. onWrite()) are needed.
-  pAwsServerCharacteristic = pWindService -> createCharacteristic( awsUUID, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY);
-  pAwsServerCharacteristic -> setValue("\0\0");
+  pWindDataServerCharacteristic = pCalypsoDataService->createCharacteristic(WIND_DATA_CHARACTERISTIC, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY);
+  pWindDataServerCharacteristic->setValue("\0\0");
+  pWindDataServerCharacteristic->createDescriptor(NimBLEUUID("2901"), NIMBLE_PROPERTY::READ)->setValue("Principal");
+
+
+  // We relay the wind service for user convenience - it is redundant with the calypso data service.
+  NimBLEService* pWindService = pServer->createService(WIND_SERVICE);
+
+  // Our characterics are all read-only, so no callbacks (e.g. onWrite()) are needed.
+  pAwsServerCharacteristic = pWindService->createCharacteristic(AWS_CHARACTERISTIC, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY);
+  pAwsServerCharacteristic->setValue("\0\0");
   pAwsServerCharacteristic->createDescriptor(NimBLEUUID("2901"), NIMBLE_PROPERTY::READ)->setValue("Wind speed");
 
-  pAwdServerCharacteristic = pWindService -> createCharacteristic( awdUUID, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY );
-  pAwdServerCharacteristic -> setValue("\0\0");
+  pAwdServerCharacteristic = pWindService->createCharacteristic(AWD_CHARACTERISTIC, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY);
+  pAwdServerCharacteristic->setValue("\0\0");
   pAwdServerCharacteristic->createDescriptor(NimBLEUUID("2901"), NIMBLE_PROPERTY::READ)->setValue("Wind direction");
 
 
-  NimBLEService* pBatteryService = pServer -> createService(batteryServiceUUID);
+  NimBLEService* pBatteryService = pServer->createService(BATTERY_SERVICE);
 
-  pBatteryServerCharacteristic = pBatteryService -> createCharacteristic( batteryLevelUUID, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY );
-  pBatteryServerCharacteristic -> setValue("\0");
+  pBatteryServerCharacteristic = pBatteryService->createCharacteristic(BATTERY_LEVEL_CHARACTERISTIC, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY);
+  pBatteryServerCharacteristic->setValue("\0");
 
   Serial.println("Server advertising starts");
 
-  // We have to spoof a real Calypso Portable Mini, so thhat apps will connect to us.
+  // We have to spoof a real Calypso Portable Mini, so that apps will recognize and connect to us.
   NimBLEAdvertising* pAdvertising = NimBLEDevice::getAdvertising();
   pAdvertising->setName("ULTRASONIC");
-  pAdvertising->addServiceUUID(pWindService -> getUUID());
+  pAdvertising->addServiceUUID(pWindService->getUUID());
   pAdvertising->addServiceUUID(CALYPSO_MYSTERY_SERVICE);
   pAdvertising->enableScanResponse(true);
   pAdvertising->start();
 }
 
 
-//const char* ssid = "xxkalispera";
-//const char* password = "koko44093JTDKB";
 
-const char* ssid     = "calypso";
+const char* ssid = "calypso";
 const char* password = "1234567890";
 
 const char* hostname = "calypso";
@@ -450,7 +477,7 @@ void setup() {
 
   Serial.begin(115200);
   delay(1000);
-  
+
   Serial.print("setup 0\n");
 
   pinMode(LED_BUILTIN, OUTPUT);
@@ -458,14 +485,14 @@ void setup() {
 
 
 
-  
+
   // Note: The ESP32 EEPROM library is used differently than the official Arduino version.
   persistentData.begin();
 
   if (!persistentData.data_valid) {
     // First-time initialization of persistent data
     persistentData.init();
-    persistentData.commit();  
+    persistentData.commit();
     Serial.println("Initialized persistent data");
   }
 
@@ -477,33 +504,33 @@ void setup() {
   WiFi.softAP(ssid, password);
   IPAddress IP = WiFi.softAPIP();
   Serial.print("AP IP address: ");
-  Serial.println(IP); // Usually 192.168.4.1
+  Serial.println(IP);  // Usually 192.168.4.1
 
 
-	WiFi.softAPsetHostname(hostname);
+  WiFi.softAPsetHostname(hostname);
 
- 
+
   // Connect to Wi-Fi network with SSID and password
   // Remove the password parameter, if you want the AP (Access Point) to be open
-  
+
 
   Serial.print("AP SSID: ");
   Serial.println(WiFi.softAPSSID());
-  
+
   Serial.print("hostname: ");
   Serial.println(WiFi.softAPgetHostname());
-  
+
   dnsServer.start(53, "*", WiFi.softAPIP());
 
-  webServer.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
+  webServer.on("/", HTTP_GET, [](AsyncWebServerRequest* request) {
     request->send(200, "text/plain", "Hi! I am ESP32 Calypso.");
   });
 
   webServer.begin();
   Serial.println("Web server started");
 
-  ElegantOTA.begin(&webServer);    // Start ElegantOTA
-  
+  ElegantOTA.begin(&webServer);  // Start ElegantOTA
+
   wifiRunning = true;
 
   // For NMEA0183 output on ESP32
@@ -527,25 +554,25 @@ void setup() {
   for (int i = 0; i < 6; i++) id += (chipid[i] << (7 * i));
 
   // Set product information
-  NMEA2000.SetProductInformation("002",                // Manufacturer's Model serial code
-                                  1,                   // Manufacturer's product code
-                                 "Doug Calypso BLE wind monitor",       // Manufacturer's Model ID
-                                 __DATE__,             // Manufacturer's Software version code
-                                 "1.0",                // Manufacturer's Model version
-                                 1                     // Load Equivalency  (units of 50mA)
-                                 );
+  NMEA2000.SetProductInformation("002",                            // Manufacturer's Model serial code
+                                 1,                                // Manufacturer's product code
+                                 "Doug Calypso BLE wind monitor",  // Manufacturer's Model ID
+                                 __DATE__,                         // Manufacturer's Software version code
+                                 "1.0",                            // Manufacturer's Model version
+                                 1                                 // Load Equivalency  (units of 50mA)
+  );
 
-   // Set device information
+  // Set device information
   NMEA2000.SetDeviceInformation(id,   // Unique number. Use e.g. Serial number.
-                                130, // Device function=Atmospheric. See codes on https://web.archive.org/web/20190531120557/https://www.nmea.org/Assets/20120726%20nmea%202000%20class%20&%20function%20codes%20v%202.00.pdf
-                                85, // Device class=External Environment. See codes on https://web.archive.org/web/20190531120557/https://www.nmea.org/Assets/20120726%20nmea%202000%20class%20&%20function%20codes%20v%202.00.pdf
+                                130,  // Device function=Atmospheric. See codes on https://web.archive.org/web/20190531120557/https://www.nmea.org/Assets/20120726%20nmea%202000%20class%20&%20function%20codes%20v%202.00.pdf
+                                85,   // Device class=External Environment. See codes on https://web.archive.org/web/20190531120557/https://www.nmea.org/Assets/20120726%20nmea%202000%20class%20&%20function%20codes%20v%202.00.pdf
                                 2006  // Just choosen free from code list on http://www.nmea.org/Assets/20121020%20nmea%202000%20registration%20list.pdf
-			      );
+  );
 
 
   // If you also want to see all traffic on the bus use N2km_ListenAndNode instead of N2km_NodeOnly below
   Serial.printf("NMEA2000 device address initialized to 0x%x\n", persistentData.node_address);
-  NMEA2000.SetMode(tNMEA2000::N2km_NodeOnly, persistentData.node_address);   // Read stored last NodeAddress, default 34
+  NMEA2000.SetMode(tNMEA2000::N2km_NodeOnly, persistentData.node_address);  // Read stored last NodeAddress, default 34
   NMEA2000.EnableForward(false);
   // Here we tell library, which PGNs we transmit
   NMEA2000.ExtendTransmitMessages(transmitMessages);
@@ -573,13 +600,13 @@ void setup() {
 // *****************************************************************************
 void loop() {
 
-  if(!connected && !doConnect && !NimBLEDevice::getScan()->isScanning()){
-     startScan();
+  if (!connected && !doConnect && !NimBLEDevice::getScan()->isScanning()) {
+    startScan();
   }
 
-  
+
   // If the flag "doConnect" is true then we have scanned for and found the desired
-  // BLE Server with which we wish to connect.  Now we connect to it.  Once we are 
+  // BLE Server with which we wish to connect.  Now we connect to it.  Once we are
   // connected we set the connected flag to be true.
   if (doConnect == true) {
     if (connectToBLEServer()) {
@@ -590,7 +617,7 @@ void loop() {
     doConnect = false;
   }
 
-    
+
   NMEA2000.ParseMessages();
 
   // Check if SourceAddress has changed (due to address conflict on bus)
@@ -603,32 +630,12 @@ void loop() {
 
 
 
-  if (BatteryLevelScheduler.IsTime()) {
-    BatteryLevelScheduler.UpdateNextTime();
-
-    // Read the battery level characteristic (it rarely sends notifications)
-    if (pBatteryLevelCharacteristic) {
-      
-      uint8_t batteryLevel = pBatteryLevelCharacteristic->readValue<uint8_t>();
-
-      Serial.printf("  Battery level: %d\n", batteryLevel);
-
-      // Send this battery level to NMEA2000
-      SendN2kBatteryLevel(batteryLevel);
-
-      // If our relay server is running, pass on the new value
-      if (pBatteryServerCharacteristic) {
-        pBatteryServerCharacteristic->setValue(&batteryLevel, sizeof(batteryLevel));
-      }
-    }
-  }
-
   if (wifiRunning) {
     ElegantOTA.loop();
     dnsServer.processNextRequest();
   }
 
-  
+
   // If the Wifi AP has been running for a minute or so and nobody has connected to it,
   // turn it off.
   if (wifiRunning && millis() > 60000 && WiFi.softAPgetStationNum() == 0) {
@@ -636,6 +643,4 @@ void loop() {
     Serial.printf("Wifi AP turned off.\n");
     wifiRunning = false;
   }
-
 }
-
