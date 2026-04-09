@@ -9,3 +9,7 @@ CAN Bus transceiver board, and a 12-to-5 volt voltage regulator board.
 
 Also has a Wifi Access Point for OTA firmware updates.
 
+Also there is a BLE server that imitates the Calypso wind meter, and relays
+data from the real one.  This allows things like the Calypso phone app to work
+while the wind meter is connected to this device.
+
