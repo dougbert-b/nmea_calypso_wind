@@ -167,13 +167,15 @@ static NimBLEUUID CALYPSO_MYSTERY_SERVICE("8ec90001-f315-4f60-9fb8-838830daea50"
 static boolean doConnect = false;
 static boolean connected = false;
 
+static int numConnectedClients = 0;
+
 static NimBLERemoteCharacteristic* pWindDataCharacteristic = nullptr;
 
 static NimBLERemoteCharacteristic* pAwsCharacteristic = nullptr;
 static NimBLERemoteCharacteristic* pAwdCharacteristic = nullptr;
 static NimBLERemoteCharacteristic* pBatteryLevelCharacteristic = nullptr;
 
-static const BLEAdvertisedDevice* myDevice;
+static const NimBLEAdvertisedDevice* myDevice;
 
 static NimBLECharacteristic* pWindDataServerCharacteristic = nullptr;
 static NimBLECharacteristic* pAwsServerCharacteristic = nullptr;
@@ -217,6 +219,10 @@ static void windDataNotifyCallback(
   if (pBatteryServerCharacteristic) {
     pBatteryServerCharacteristic->setValue(&batt, sizeof(batt));
   }
+  
+  // A convenient place to periodically print a message...
+  Serial.printf("%d connected clients\n", numConnectedClients);
+
 }
 
 
@@ -434,10 +440,15 @@ class MyServerCallbacks : public NimBLEServerCallbacks {
 
   void onConnect(NimBLEServer* pServer, NimBLEConnInfo& connInfo) override {
     Serial.println("Server: Client connected");
+    numConnectedClients++;
+    if (numConnectedClients <= CONFIG_BT_NIMBLE_MAX_CONNECTIONS) {
+      NimBLEDevice::startAdvertising();   // Restart advertising to allow multiple connections
+    }
   };
 
   void onDisconnect(NimBLEServer* pServer, NimBLEConnInfo& connInfo, int reason) override {
-    Serial.println("Server: Client disconnected, starting advertising");
+    Serial.println("Server: Client disconnected");
+    numConnectedClients--;
     NimBLEDevice::startAdvertising();
   };
 
