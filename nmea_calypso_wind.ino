@@ -5,12 +5,17 @@
 
 #include <Arduino.h>
 
+#define USE_ELEGANT_OTA 1
+#undef USE_BLE_OTA
+
+#if USE_ELEGANT_OTA
 #include <WiFi.h>
 #include <ESPAsyncWebServer.h>
 #include <AsyncTCP.h>
 
 #include <DNSServer.h>
 #include <ElegantOTA.h>
+#endif
 
 
 
@@ -31,6 +36,32 @@
 #include "esp_mac.h"
 
 #include <NimBLEDevice.h>
+
+#if USE_BLE_OTA
+/*
+  Add a BLE OTA service that implement https://components.espressif.com/components/espressif/ble_ota without security
+  The service advertises itself as: 00008018-0000-1000-8000-00805f9b34fb
+  If any of this is defined:
+  MODEL
+  SERIAL_NUM 
+  FW_VERSION  
+  HW_VERSION 
+  MANUFACTURER 
+  the DIS service is added
+
+  The flow of creating the BLE server is:
+  1. Create a BLE Server
+  2. Add a BLE OTA Service
+  3. Add a DIS Service
+  4. Start the service.
+  5. Start advertising.
+  6. Process the update
+*/
+
+#include "NimBLEOTA.h"
+
+NimBLEOTAClass BLEOTA;
+#endif
 
 // Persistent Data
 
@@ -460,6 +491,19 @@ void startBLEServer() {
   pBatteryServerCharacteristic = pBatteryService->createCharacteristic(BATTERY_LEVEL_CHARACTERISTIC, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY);
   pBatteryServerCharacteristic->setValue("\0");
 
+#if USE_BLE_OTA
+  // Add OTA and Device Information Service
+  BLEOTA.begin(pServer);
+
+  //BLEOTA.setModel(MODEL_NAME);
+  //BLEOTA.setSerialNumber(SERIAL_NUM);
+  //BLEOTA.setFWVersion(FIRMWARE_VERSION);
+  //BLEOTA.setHWVersion(MODEL_VERSION);
+  //BLEOTA.setManufactuer(MANUFACTURER);
+
+  BLEOTA.init();
+#endif
+
   Serial.println("Server advertising starts");
 
   // We have to spoof a real Calypso Portable Mini, so that apps will recognize and connect to us.
@@ -467,12 +511,15 @@ void startBLEServer() {
   pAdvertising->setName("ULTRASONIC");
   pAdvertising->addServiceUUID(pWindService->getUUID());
   pAdvertising->addServiceUUID(CALYPSO_MYSTERY_SERVICE);
+#if USE_BLE_OTA
+  pAdvertising->addServiceUUID(BLEOTA.getBLEOTAuuid());
+#endif
   pAdvertising->enableScanResponse(true);
   pAdvertising->start();
 }
 
 
-
+#if USE_ELEGANT_OTA
 const char* ssid = "calypso";
 const char* password = "1234567890";
 
@@ -483,7 +530,7 @@ DNSServer dnsServer;
 AsyncWebServer webServer(80);
 
 bool wifiRunning = false;
-
+#endif
 
 void setup() {
 
@@ -512,7 +559,7 @@ void setup() {
   delay(1000);
 
 
-
+#if USE_ELEGANT_OTA
   // Set WiFi AP Mode
   WiFi.softAP(ssid, password);
   IPAddress IP = WiFi.softAPIP();
@@ -545,6 +592,7 @@ void setup() {
   ElegantOTA.begin(&webServer);  // Start ElegantOTA
 
   wifiRunning = true;
+#endif
 
   // For NMEA0183 output on ESP32
   Serial2.begin(4800, SERIAL_8N1, 16 /*Rx pin*/, 17 /*Tx pin*/, true /*invert*/);
@@ -630,6 +678,9 @@ void loop() {
     doConnect = false;
   }
 
+#if USE_BLE_OTA
+  BLEOTA.process();
+#endif
 
   NMEA2000.ParseMessages();
 
@@ -642,7 +693,7 @@ void loop() {
   }
 
 
-
+#if USE_ELEGANT_OTA
   if (wifiRunning) {
     ElegantOTA.loop();
     dnsServer.processNextRequest();
@@ -656,4 +707,5 @@ void loop() {
     Serial.printf("Wifi AP turned off.\n");
     wifiRunning = false;
   }
+#endif
 }
