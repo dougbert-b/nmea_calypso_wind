@@ -6,7 +6,7 @@
 #include <Arduino.h>
 
 #define USE_ELEGANT_OTA 1
-#undef USE_BLE_OTA
+#define USE_BLE_OTA 0
 
 #if USE_ELEGANT_OTA
 #include <WiFi.h>
@@ -61,6 +61,8 @@
 #include "NimBLEOTA.h"
 
 NimBLEOTAClass BLEOTA;
+#else
+#include <NimBLEDevice.h>
 #endif
 
 // Persistent Data
@@ -201,23 +203,28 @@ static void windDataNotifyCallback(
 
   double AWS = (pData[1] << 8 | pData[0]) * 0.01;
   double AWD  = (pData[3] << 8 | pData[2]); 
-	uint8_t batt = pData[5];  // pData[4] seems to be a 0-10 battery level.
+	//uint8_t batt = 10 * pData[4];  // pData[4] seems to be a 0-10 battery level, but pData[5] is always 100
 
-  Serial.printf("values : AWS %2.1f  AED: %3.0f  batt  %d\n", AWS, AWD, batt);
+  Serial.printf("values : AWS %2.1f  AWD: %3.0f\n", AWS, AWD);
 
-  
   // Send the data to NMEA2000
   SendN2kWind(AWS, AWD);
-  SendN2kBatteryLevel(batt);
 
-  // If our relay server is running, pass on the new value
+  // If our relay server is running, pass on the entire data array
   if (pWindDataServerCharacteristic) {
     pWindDataServerCharacteristic->setValue(pData, length);
     pWindDataServerCharacteristic->notify();
   }
 
-  if (pBatteryServerCharacteristic) {
-    pBatteryServerCharacteristic->setValue(&batt, sizeof(batt));
+  
+
+  if (pBatteryLevelCharacteristic) {
+    // Read the battery level characteristic  (it has more resolution than the byte in the above data string)
+    uint8_t batt = pBatteryLevelCharacteristic->getValue()[0];
+    SendN2kBatteryLevel(batt);
+    if (pBatteryServerCharacteristic) {
+      pBatteryServerCharacteristic->setValue(&batt, sizeof(batt));
+    }
   }
   
   // A convenient place to periodically print a message...
@@ -703,7 +710,7 @@ void loop() {
     Serial.printf("NMEA2000 device address changed to 0x%x\n", persistentData.node_address);
   }
 
-
+//Serial.printf("wifi %d\n", wifiRunning);
 #if USE_ELEGANT_OTA
   if (wifiRunning) {
     ElegantOTA.loop();
