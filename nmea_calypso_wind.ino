@@ -35,8 +35,6 @@
 
 #include "esp_mac.h"
 
-#include <NimBLEDevice.h>
-
 #if USE_BLE_OTA
 /*
   Add a BLE OTA service that implement https://components.espressif.com/components/espressif/ble_ota without security
