@@ -21,7 +21,6 @@
 const char *MANUFACTURER = "dougbraun.com";
 const char *MODEL_NAME = "Doug Calypso BLE wind monitor";
 const char *MODEL_VERSION = "1.0";
-const char *SERIAL_NUM = "002";                // Manufacturer's Model serial code
 const char *FIRMWARE_VERSION = __DATE__ " " __TIME__;
 
 #define ESP32_CAN_TX_PIN GPIO_NUM_3  // Set CAN TX port   This is the pin labeled D2 on the Seeed Xiao ESP32S3 board
@@ -169,6 +168,9 @@ static boolean doConnect = false;
 static boolean connected = false;
 
 static int numConnectedClients = 0;
+
+uint32_t serial_num;  // Derived from BLE MAC address
+
 
 static NimBLERemoteCharacteristic* pWindDataCharacteristic = nullptr;
 
@@ -511,7 +513,7 @@ void startBLEServer() {
   BLEOTA.begin(pServer);
 
   BLEOTA.setModel(MODEL_NAME);
-  BLEOTA.setSerialNumber(SERIAL_NUM);
+  BLEOTA.setSerialNumber(String(serial_num));
   BLEOTA.setFWVersion(FIRMWARE_VERSION);
   BLEOTA.setHWVersion(MODEL_VERSION);
   BLEOTA.setManufactuer(MANUFACTURER);
@@ -573,6 +575,12 @@ void setup() {
 
   delay(1000);
 
+  // Generate unique serial number from chip id
+  uint8_t chipid[6];
+  esp_efuse_mac_get_default(chipid);
+
+  serial_num = 0;
+  for (int i = 0; i < 6; i++) serial_num += (chipid[i] << (7 * i));
 
 #if USE_ELEGANT_OTA
   // Set WiFi AP Mode
@@ -622,15 +630,10 @@ void setup() {
   NMEA2000.SetN2kCANReceiveFrameBufSize(150);
   NMEA2000.SetN2kCANSendFrameBufSize(150);
 
-  // Generate unique number from chip id
-  uint8_t chipid[6];
-  esp_efuse_mac_get_default(chipid);
-
-  uint32_t id = 0;
-  for (int i = 0; i < 6; i++) id += (chipid[i] << (7 * i));
+  
 
   // Set product information
-  NMEA2000.SetProductInformation(SERIAL_NUM,                // Manufacturer's Model serial code
+  NMEA2000.SetProductInformation(String(serial_num).c_str(),           // Manufacturer's Model serial code
                                  1,                   // Manufacturer's product code  (made up)
                                  MODEL_NAME,       // Manufacturer's Model ID
                                  FIRMWARE_VERSION,             // Manufacturer's Software version code
@@ -639,7 +642,7 @@ void setup() {
                                  );
 
   // Set device information
-  NMEA2000.SetDeviceInformation(id,   // Unique number. Use e.g. Serial number.
+  NMEA2000.SetDeviceInformation(serial_num,   // Unique number. Use e.g. Serial number.
                                 130,  // Device function=Atmospheric. See codes on https://web.archive.org/web/20190531120557/https://www.nmea.org/Assets/20120726%20nmea%202000%20class%20&%20function%20codes%20v%202.00.pdf
                                 85,   // Device class=External Environment. See codes on https://web.archive.org/web/20190531120557/https://www.nmea.org/Assets/20120726%20nmea%202000%20class%20&%20function%20codes%20v%202.00.pdf
                                 2006  // Just choosen free from code list on http://www.nmea.org/Assets/20121020%20nmea%202000%20registration%20list.pdf
