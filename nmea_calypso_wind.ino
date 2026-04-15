@@ -5,8 +5,8 @@
 
 #include <Arduino.h>
 
-#define USE_ELEGANT_OTA 1
-#define USE_BLE_OTA 0
+#define USE_ELEGANT_OTA 0
+#define USE_BLE_OTA 1
 
 #if USE_ELEGANT_OTA
 #include <WiFi.h>
@@ -17,7 +17,12 @@
 #include <ElegantOTA.h>
 #endif
 
-
+// Used by both NMEA2000 and BLE
+const char *MANUFACTURER = "dougbraun.com";
+const char *MODEL_NAME = "Doug Calypso BLE wind monitor";
+const char *MODEL_VERSION = "1.0";
+const char *SERIAL_NUM = "002";                // Manufacturer's Model serial code
+const char *FIRMWARE_VERSION = __DATE__ " " __TIME__;
 
 #define ESP32_CAN_TX_PIN GPIO_NUM_3  // Set CAN TX port   This is the pin labeled D2 on the Seeed Xiao ESP32S3 board
 #define ESP32_CAN_RX_PIN GPIO_NUM_2  // Set CAN RX port  This is the pin labeled D on the Seeed Xiao ESP32S3 board
@@ -158,10 +163,6 @@ static NimBLEUUID AWD_CHARACTERISTIC("2A73");  // Industry standard
 
 static NimBLEUUID BATTERY_SERVICE("180F");               // Standard
 static NimBLEUUID BATTERY_LEVEL_CHARACTERISTIC("2a19");  // Standard
-
-// The Calypso advertises this service, but does not seem to implement it.
-static NimBLEUUID CALYPSO_MYSTERY_SERVICE("8ec90001-f315-4f60-9fb8-838830daea50");
-
 
 
 static boolean doConnect = false;
@@ -412,13 +413,10 @@ class MyScanCallbacks : public NimBLEScanCallbacks {
 
     // We have found a device, let us now see if it is a Calypso wind meter.
     if (advertisedDevice->getName() == "ULTRASONIC" && advertisedDevice->isAdvertisingService(WIND_SERVICE)) {
-
       Serial.println("Found device, stopping scan...");
-
       NimBLEDevice::getScan()->stop();
       myDevice = advertisedDevice;
       doConnect = true;
-
     }  // Found our server
   }    // onResult
 };
@@ -447,7 +445,8 @@ class MyServerCallbacks : public NimBLEServerCallbacks {
     Serial.println("Server: Client connected");
     numConnectedClients++;
     if (numConnectedClients <= CONFIG_BT_NIMBLE_MAX_CONNECTIONS) {
-      NimBLEDevice::startAdvertising();   // Restart advertising to allow multiple connections
+      // Unfortunately the ESP32S3 crashes after the second client connects...
+      //NimBLEDevice::startAdvertising();   // Restart advertising to allow multiple connections
     }
   };
 
@@ -511,11 +510,11 @@ void startBLEServer() {
   // Add OTA and Device Information Service
   BLEOTA.begin(pServer);
 
-  //BLEOTA.setModel(MODEL_NAME);
-  //BLEOTA.setSerialNumber(SERIAL_NUM);
-  //BLEOTA.setFWVersion(FIRMWARE_VERSION);
-  //BLEOTA.setHWVersion(MODEL_VERSION);
-  //BLEOTA.setManufactuer(MANUFACTURER);
+  BLEOTA.setModel(MODEL_NAME);
+  BLEOTA.setSerialNumber(SERIAL_NUM);
+  BLEOTA.setFWVersion(FIRMWARE_VERSION);
+  BLEOTA.setHWVersion(MODEL_VERSION);
+  BLEOTA.setManufactuer(MANUFACTURER);
 
   BLEOTA.init();
 #endif
@@ -526,8 +525,8 @@ void startBLEServer() {
   NimBLEAdvertising* pAdvertising = NimBLEDevice::getAdvertising();
   pAdvertising->setName("ULTRASONIC");
   pAdvertising->addServiceUUID(pWindService->getUUID());
-  pAdvertising->addServiceUUID(CALYPSO_MYSTERY_SERVICE);
-#if USE_BLE_OTA
+  
+#if USE_BLE_OTA  
   pAdvertising->addServiceUUID(BLEOTA.getBLEOTAuuid());
 #endif
   pAdvertising->enableScanResponse(true);
@@ -631,13 +630,13 @@ void setup() {
   for (int i = 0; i < 6; i++) id += (chipid[i] << (7 * i));
 
   // Set product information
-  NMEA2000.SetProductInformation("002",                            // Manufacturer's Model serial code
-                                 1,                                // Manufacturer's product code
-                                 "Doug Calypso BLE wind monitor",  // Manufacturer's Model ID
-                                 __DATE__,                         // Manufacturer's Software version code
-                                 "1.0",                            // Manufacturer's Model version
-                                 1                                 // Load Equivalency  (units of 50mA)
-  );
+  NMEA2000.SetProductInformation(SERIAL_NUM,                // Manufacturer's Model serial code
+                                 1,                   // Manufacturer's product code  (made up)
+                                 MODEL_NAME,       // Manufacturer's Model ID
+                                 FIRMWARE_VERSION,             // Manufacturer's Software version code
+                                 MODEL_VERSION,                // Manufacturer's Model version
+                                 1                     // Load Equivalency  (units of 50mA)
+                                 );
 
   // Set device information
   NMEA2000.SetDeviceInformation(id,   // Unique number. Use e.g. Serial number.
