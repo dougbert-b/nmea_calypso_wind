@@ -5,8 +5,8 @@
 
 #include <Arduino.h>
 
-#define USE_ELEGANT_OTA 0
-#define USE_BLE_OTA 1
+#define USE_ELEGANT_OTA 1
+#define USE_BLE_OTA 0
 
 #if USE_ELEGANT_OTA
 #include <WiFi.h>
@@ -164,12 +164,12 @@ static NimBLEUUID BATTERY_SERVICE("180F");               // Standard
 static NimBLEUUID BATTERY_LEVEL_CHARACTERISTIC("2a19");  // Standard
 
 
-static boolean doConnect = false;
-static boolean connected = false;
+static boolean doingOta = false;
+static bool doConnect = false;
 
 static int numConnectedClients = 0;
 
-uint32_t serial_num;  // Derived from BLE MAC address
+static uint32_t serial_num;  // Derived from BLE MAC address
 
 
 static NimBLERemoteCharacteristic* pWindDataCharacteristic = nullptr;
@@ -178,7 +178,8 @@ static NimBLERemoteCharacteristic* pAwsCharacteristic = nullptr;
 static NimBLERemoteCharacteristic* pAwdCharacteristic = nullptr;
 static NimBLERemoteCharacteristic* pBatteryLevelCharacteristic = nullptr;
 
-static const NimBLEAdvertisedDevice* myDevice;
+static const NimBLEAdvertisedDevice* myDevice = nullptr;
+NimBLEClient* pClient = nullptr;
 
 static NimBLECharacteristic* pWindDataServerCharacteristic = nullptr;
 static NimBLECharacteristic* pAwsServerCharacteristic = nullptr;
@@ -291,12 +292,12 @@ static void batteryLevelNotifyCallback(
 
 
 class MyBLEClientCallback : public BLEClientCallbacks {
-  void onConnect(NimBLEClient* pclient) {
-    connected = true;
+  void onConnect(NimBLEClient* client) {
+    assert(client == pClient);
   }
 
-  void onDisconnect(NimBLEClient* pclient) {
-    connected = false;
+  void onDisconnect(NimBLEClient* client) {
+    assert(client == pClient);
     Serial.println("onDisconnect");
   }
 };
@@ -309,11 +310,8 @@ bool connectToBLEServer() {
   Serial.print("Forming a connection to ");
   Serial.println(myDevice->getAddress().toString().c_str());
 
-  NimBLEClient* pClient = NimBLEDevice::createClient();
-  Serial.println(" - Created client");
-
-  pClient->setClientCallbacks(&clientCallbacks);
-
+  assert(pClient && !pClient->isConnected());
+  
   // Connect to the remote BLE Server.
   pClient->connect(myDevice);  // if you pass BLEAdvertisedDevice instead of address, it will be recognized type of peer device address (public or private)
   Serial.println(" - Connected to server");
@@ -343,8 +341,6 @@ bool connectToBLEServer() {
   pWindDataCharacteristic->subscribe(true, windDataNotifyCallback);
   Serial.println(" - Found wind data characteristic");
 
-
-
   // Obtain references to other interesting characteristics in the service of the remote BLE server.
   // These are not needed for NMEA2000 or relay support, just user convenience.
   NimBLERemoteService* pWindService = pClient->getService(WIND_SERVICE);
@@ -353,7 +349,7 @@ bool connectToBLEServer() {
   if (pAwsCharacteristic == nullptr) {
     Serial.print("Failed to find AWS characteristic UUID: ");
     Serial.println(AWS_CHARACTERISTIC.toString().c_str());
-    pClient->disconnect();
+    disconnectFromBLEServer();
     return false;
   }
   Serial.println(" - Found AWS characteristic");
@@ -366,7 +362,7 @@ bool connectToBLEServer() {
   if (pAwdCharacteristic == nullptr) {
     Serial.print("Failed to find AWD characteristic UUID: ");
     Serial.println(AWD_CHARACTERISTIC.toString().c_str());
-    pClient->disconnect();
+    disconnectFromBLEServer();
     return false;
   }
   Serial.println(" - Found AWD characteristic");
@@ -396,8 +392,14 @@ bool connectToBLEServer() {
     Serial.println(BATTERY_SERVICE.toString().c_str());
   }
 
+  return true;
+}
 
-  connected = true;
+bool disconnectFromBLEServer() {
+  assert(pClient);
+  pClient->disconnect();
+  Serial.println(" - Disconnected from server");
+  
   return true;
 }
 
@@ -466,6 +468,22 @@ class MyServerCallbacks : public NimBLEServerCallbacks {
 MyServerCallbacks serverCallbacks;
 
 
+#if USE_BLE_OTA
+class myOTACallbacks : public BLEOTACallbacks {
+public:
+    void beforeStartOTA() override {
+        Serial.println("beforeStartOTA called!\n");
+        doingOta = true;
+    }
+
+    void beforeStartSPIFFS() {}
+    void afterStop() {}
+    void afterAbort() {}
+};
+
+myOTACallbacks otaCallbacks;
+#endif
+
 void startBLEServer() {
   // Server set-up
 
@@ -511,6 +529,7 @@ void startBLEServer() {
 #if USE_BLE_OTA
   // Add OTA and Device Information Service
   BLEOTA.begin(pServer);
+  BLEOTA.setCallbacks(&otaCallbacks);
 
   BLEOTA.setModel(MODEL_NAME);
   BLEOTA.setSerialNumber(String(serial_num));
@@ -534,6 +553,7 @@ void startBLEServer() {
   pAdvertising->enableScanResponse(true);
   pAdvertising->start();
 }
+
 
 
 #if USE_ELEGANT_OTA
@@ -667,7 +687,9 @@ void setup() {
   Serial.print("setup 3\n");
 
   NimBLEDevice::init("RELAY");
-
+  pClient = NimBLEDevice::createClient();
+  pClient->setClientCallbacks(&clientCallbacks);
+  Serial.println(" - Created client");
   startBLEServer();
 }
 
@@ -679,36 +701,49 @@ void setup() {
 // *****************************************************************************
 void loop() {
 
-  if (!connected && !doConnect && !NimBLEDevice::getScan()->isScanning()) {
-    startScan();
-  }
 
-
-  // If the flag "doConnect" is true then we have scanned for and found the desired
-  // BLE Server with which we wish to connect.  Now we connect to it.  Once we are
-  // connected we set the connected flag to be true.
-  if (doConnect == true) {
-    if (connectToBLEServer()) {
-      Serial.println("We are now connected to the Calyposo BLE Server.");
-    } else {
-      Serial.println("We have failed to connect to the server; there is nothing more we will do.");
+  if (doingOta) {
+    // Stop doing everything else
+    if (pClient->isConnected()) {
+      disconnectFromBLEServer();
+      NimBLEDevice::getScan()->stop();
     }
-    doConnect = false;
+  } else {
+
+    // Normal flow
+  
+    if (!pClient->isConnected() && !doConnect && !NimBLEDevice::getScan()->isScanning()) {
+      startScan();
+    }
+
+    // If the flag "doConnect" is true then we have scanned for and found the desired
+    // BLE Server with which we wish to connect.  Now we connect to it. 
+    if (doConnect == true) {
+      if (connectToBLEServer()) {
+        Serial.println("We are now connected to the Calyposo BLE Server.");
+      } else {
+        Serial.println("We have failed to connect to the server; there is nothing more we will do.");
+      }
+      doConnect = false;
+    }
+
+    NMEA2000.ParseMessages();
+
+    // Check if SourceAddress has changed (due to address conflict on bus)
+    if (NMEA2000.ReadResetAddressChanged()) {
+      // Save potentially changed Source Address to NVS memory
+      persistentData.node_address = NMEA2000.GetN2kSource();
+      persistentData.commit();
+      Serial.printf("NMEA2000 device address changed to 0x%x\n", persistentData.node_address);
+    }
+
   }
 
 #if USE_BLE_OTA
   BLEOTA.process();
 #endif
 
-  NMEA2000.ParseMessages();
-
-  // Check if SourceAddress has changed (due to address conflict on bus)
-  if (NMEA2000.ReadResetAddressChanged()) {
-    // Save potentially changed Source Address to NVS memory
-    persistentData.node_address = NMEA2000.GetN2kSource();
-    persistentData.commit();
-    Serial.printf("NMEA2000 device address changed to 0x%x\n", persistentData.node_address);
-  }
+  
 
 //Serial.printf("wifi %d\n", wifiRunning);
 #if USE_ELEGANT_OTA
