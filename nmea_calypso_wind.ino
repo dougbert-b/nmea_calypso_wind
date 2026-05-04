@@ -186,6 +186,7 @@ static NimBLECharacteristic* pAwsServerCharacteristic = nullptr;
 static NimBLECharacteristic* pAwdServerCharacteristic = nullptr;
 static NimBLECharacteristic* pBatteryServerCharacteristic = nullptr;
 
+static bool notified = false;
 
 // Convert from integral hundredths to a proper floating-point value.
 double convertWindValue(const uint8_t* data) {
@@ -203,6 +204,8 @@ static void windDataNotifyCallback(
   Serial.printf("Notify callback for Calypso wind data, data length %d ", length);
   assert(length >= 10);
 
+  notified = true;
+
   double AWS = (pData[1] << 8 | pData[0]) * 0.01;
   double AWD  = (pData[3] << 8 | pData[2]); 
 	//uint8_t batt = 10 * pData[4];  // pData[4] seems to be a 0-10 battery level, but pData[5] is always 100
@@ -218,17 +221,6 @@ static void windDataNotifyCallback(
     pWindDataServerCharacteristic->notify();
   }
 
-  
-
-  if (pBatteryLevelCharacteristic) {
-    // Read the battery level characteristic  (it has more resolution than the byte in the above data string)
-    uint8_t batt = pBatteryLevelCharacteristic->getValue()[0];
-    SendN2kBatteryLevel(batt);
-    if (pBatteryServerCharacteristic) {
-      pBatteryServerCharacteristic->setValue(&batt, sizeof(batt));
-    }
-  }
-  
   // A convenient place to periodically print a message...
   Serial.printf("%d connected clients\n", numConnectedClients);
 
@@ -737,6 +729,19 @@ void loop() {
       Serial.printf("NMEA2000 device address changed to 0x%x\n", persistentData.node_address);
     }
 
+  }
+
+  if (notified) {   // This flag gets set about once per second.
+    notified = false;
+  
+    if (pBatteryLevelCharacteristic) {
+      // Read the battery level characteristic  (it has more resolution than the byte in the main data string)
+      uint8_t batt = pBatteryLevelCharacteristic->readValue()[0];
+      SendN2kBatteryLevel(batt);
+      if (pBatteryServerCharacteristic) {
+        pBatteryServerCharacteristic->setValue(&batt, sizeof(batt));
+      }
+    }
   }
 
 #if USE_BLE_OTA
