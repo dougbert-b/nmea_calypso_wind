@@ -5,8 +5,8 @@
 
 #include <Arduino.h>
 
-#define USE_ELEGANT_OTA 1
-#define USE_BLE_OTA 0
+#define USE_ELEGANT_OTA 0
+#define USE_BLE_OTA 1
 
 #if USE_ELEGANT_OTA
 #include <WiFi.h>
