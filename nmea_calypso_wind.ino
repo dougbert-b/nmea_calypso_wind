@@ -154,6 +154,8 @@ static NimBLEUUID CALYPSO_DATA_SERVICE("180D");      // Unfortunately the same a
 static NimBLEUUID WIND_DATA_CHARACTERISTIC("2A39");  // Unfortunately the same as the standard heart rate control point
 static NimBLEUUID DATA_RATE_CHARACTERISTIC("A002");  // We ignore this, but we need to expose it for the clients to work.
 static NimBLEUUID PITCH_CHARACTERISTIC("A003");  // We ignore this, but we need to expose it for the clients to work.
+static NimBLEUUID CALYPSO_MYSTERY_SERVICE("8EC90001-F315-4F60-9FB8-838830DAEA50");  // The Calypso device advertises this.
+
 
 // These services and characteristics provide the same wind/battery data, in a more user-friendly way.
 static NimBLEUUID WIND_SERVICE("181A");        // Industry standard
@@ -408,7 +410,9 @@ class MyScanCallbacks : public NimBLEScanCallbacks {
     Serial.println(advertisedDevice->toString().c_str());
 
     // We have found a device, let us now see if it is a Calypso wind meter.
-    if (advertisedDevice->getName() == "ULTRASONIC" && advertisedDevice->isAdvertisingService(WIND_SERVICE)) {
+    // We look for the mystery service to distinguish a real Calypso device from another device running this program.
+    if (advertisedDevice->getName() == "ULTRASONIC" && advertisedDevice->isAdvertisingService(WIND_SERVICE) &&
+        advertisedDevice->isAdvertisingService(CALYPSO_MYSTERY_SERVICE)) {
       Serial.println("Found device, stopping scan...");
       NimBLEDevice::getScan()->stop();
       myDevice = advertisedDevice;
