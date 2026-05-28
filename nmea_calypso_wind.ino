@@ -8,6 +8,8 @@
 #define USE_ELEGANT_OTA 0
 #define USE_BLE_OTA 1
 
+#define DO_BMS 1
+
 #if USE_ELEGANT_OTA
 #include <WiFi.h>
 #include <ESPAsyncWebServer.h>
@@ -136,13 +138,13 @@ void SendN2kWind(double windSpeed, double windAngle) {
 
 
 // *****************************************************************************
-void SendN2kBatteryLevel(int batteryLevel) {
+void SendN2kBatteryLevel(int batteryIdx, int batteryLevel) {
 
   tN2kMsg N2kMsg;
 
-  Serial.printf("Transmitting NMEA data: Battery Level %d\n", batteryLevel);
+  Serial.printf("Transmitting NMEA data: Battery %d Level %d\n", batteryIdx, batteryLevel);
 
-  SetN2kDCStatus(N2kMsg, 1, 1, N2kDCt_Battery, batteryLevel, 100 /* state of health % */, 999.9 /* Remaining time */);
+  SetN2kDCStatus(N2kMsg, 1, batteryIdx, N2kDCt_Battery, batteryLevel, 100 /* state of health % */, 999.9 /* Remaining time */);
   NMEA2000.SendMsg(N2kMsg);
 }
 
@@ -165,9 +167,14 @@ static NimBLEUUID AWD_CHARACTERISTIC("2A73");  // Industry standard
 static NimBLEUUID BATTERY_SERVICE("180F");               // Standard
 static NimBLEUUID BATTERY_LEVEL_CHARACTERISTIC("2a19");  // Standard
 
+#if DO_BMS
+static NimBLEUUID BMS_DATA_SERVICE("FFE0");
+static NimBLEUUID BMS_DATA_CHARACTERISTIC("FFE1");  
+#endif
+
+
 
 static boolean doingOta = false;
-static bool doConnect = false;
 
 static int numConnectedClients = 0;
 
@@ -175,18 +182,22 @@ static uint32_t serial_num;  // Derived from BLE MAC address
 
 
 static NimBLERemoteCharacteristic* pWindDataCharacteristic = nullptr;
-
 static NimBLERemoteCharacteristic* pAwsCharacteristic = nullptr;
 static NimBLERemoteCharacteristic* pAwdCharacteristic = nullptr;
 static NimBLERemoteCharacteristic* pBatteryLevelCharacteristic = nullptr;
 
-static const NimBLEAdvertisedDevice* myDevice = nullptr;
-NimBLEClient* pClient = nullptr;
+NimBLEClient* pCalypsoClient = nullptr;
 
 static NimBLECharacteristic* pWindDataServerCharacteristic = nullptr;
 static NimBLECharacteristic* pAwsServerCharacteristic = nullptr;
 static NimBLECharacteristic* pAwdServerCharacteristic = nullptr;
 static NimBLECharacteristic* pBatteryServerCharacteristic = nullptr;
+
+#if DO_BMS
+static NimBLERemoteCharacteristic* pBMSCharacteristic = nullptr;
+NimBLEClient* pBMSClient = nullptr;
+#endif
+
 
 static bool notified = false;
 
@@ -210,7 +221,7 @@ static void windDataNotifyCallback(
 
   double AWS = (pData[1] << 8 | pData[0]) * 0.01;
   double AWD  = (pData[3] << 8 | pData[2]); 
-	//uint8_t batt = 10 * pData[4];  // pData[4] seems to be a 0-10 battery level, but pData[5] is always 100
+	//uint8_t level = 10 * pData[4];  // pData[4] seems to be a 0-10 battery level, but pData[5] is always 100
 
   Serial.printf("values : AWS %2.1f  AWD: %3.0f\n", AWS, AWD);
 
@@ -285,40 +296,160 @@ static void batteryLevelNotifyCallback(
 }
 
 
-class MyBLEClientCallback : public BLEClientCallbacks {
+class MyCalypsoClientCallbacks : public BLEClientCallbacks {
   void onConnect(NimBLEClient* client) {
-    assert(client == pClient);
+    assert(client == pCalypsoClient);
   }
 
   void onDisconnect(NimBLEClient* client) {
-    assert(client == pClient);
-    Serial.println("onDisconnect");
+    assert(client == pCalypsoClient);
+    Serial.println("Calypso onDisconnect");
   }
 };
 
-MyBLEClientCallback clientCallbacks;
+MyCalypsoClientCallbacks calypsoClientCallbacks;
+
+
+#if DO_BMS
+static void bmsNotifyCallback(
+  NimBLERemoteCharacteristic* pBLERemoteCharacteristic,
+  uint8_t* pData,
+  size_t length,
+  bool isNotify) {
+
+  Serial.printf("Notify callback for BMS, data length %d ", length);
+  
+}
 
 
 
-bool connectToBLEServer() {
+uint8_t crc(const uint8_t data[], const uint16_t len) {
+  uint8_t crc = 0;
+  for (uint16_t i = 0; i < len; i++) {
+    crc = crc + data[i];
+  }
+  return crc;
+}
+
+void process_frame(const std::vector<uint8_t> &data) {
+
+  auto jk_get_16bit = [&](size_t i) -> uint16_t { return (uint16_t(data[i + 1]) << 8) | (uint16_t(data[i + 0]) << 0); };
+  auto jk_get_32bit = [&](size_t i) -> uint32_t {
+    return (uint32_t(jk_get_16bit(i + 2)) << 16) | (uint32_t(jk_get_16bit(i + 0)) << 0);
+  };
+
+  if (data[4] == 2) {
+    // Cell data packet
+
+    Serial.printf("Cell info frame (JK02_32S, %zu bytes) received:  ", data.size());
+    //Serial.printf("  ");
+    //print_hex_pretty(&data.front(), 150);
+    //Serial.printf("\n  ");
+    //print_hex_pretty(&data.front()+150, data.size()-150); 
+    //Serial.printf("\n");
+
+    float voltage = (float) ((int32_t) jk_get_32bit(150)) * 0.001f;
+    float current = (float) ((int32_t) jk_get_32bit(158)) * 0.001f;
+    Serial.printf("SOC: %d  Voltage: %g  Current: %g  SOH: %d\n", data[173], voltage, current, data[190]);
+
+    SendN2kBatteryLevel(1, data[173]);
+
+  }
+}
+
+static const uint16_t MIN_RESPONSE_SIZE = 300;
+static const uint16_t MAX_RESPONSE_SIZE = 384 + 16;
+
+std::vector<uint8_t> frame_buffer;
+
+void assemble(const uint8_t *data, uint16_t length) {
+
+  if (length <= 4) {
+    frame_buffer.clear();
+    return;  // Ignore the 4-byte AT/r/n frames that are constantly sent
+  }
+
+  if (frame_buffer.size() > MAX_RESPONSE_SIZE) {
+    Serial.printf("Frame dropped because of excessive length\n");
+    frame_buffer.clear();
+    return;
+  }
+
+  // Flush buffer on every preamble
+  if (length >= 4 && data[0] == 0x55 && data[1] == 0xAA && data[2] == 0xEB && data[3] == 0x90) {
+    frame_buffer.clear();
+  }
+
+  frame_buffer.insert(frame_buffer.end(), data, data + length);
+
+  if (frame_buffer.size() >= MIN_RESPONSE_SIZE) {
+    const uint8_t *raw = &frame_buffer[0];
+    // Even if the frame is 320 bytes long the CRC is at position 300 in front of 0xAA 0x55 0x90 0xEB
+    const uint16_t frame_size = 300;  // frame_buffer.size();
+
+    uint8_t computed_crc = crc(raw, frame_size - 1);
+    uint8_t remote_crc = raw[frame_size - 1];
+    if (computed_crc != remote_crc) {
+      Serial.printf("CRC check failed! 0x%02X != 0x%02X\n", computed_crc, remote_crc);
+      frame_buffer.clear();
+      return;
+    }
+
+    // Make a copy so we can immediately clear the main buffer
+    std::vector<uint8_t> data(frame_buffer.begin(), frame_buffer.end());
+    frame_buffer.clear();
+
+    process_frame(data);
+  }
+}
+
+
+
+static void BMSDataNotifyCallback(
+  NimBLERemoteCharacteristic* pBLERemoteCharacteristic,
+  uint8_t* pData,
+  size_t length,
+  bool isNotify) {
+
+  assemble(pData, length);
+}
+
+
+
+
+class MyBMSClientCallbacks : public BLEClientCallbacks {
+  void onConnect(NimBLEClient* client) {
+    assert(client == pBMSClient);
+  }
+
+  void onDisconnect(NimBLEClient* client) {
+    assert(client == pBMSClient);
+    Serial.println("BMS onDisconnect");
+  }
+};
+
+MyBMSClientCallbacks bmsClientCallbacks;
+
+#endif
+
+bool connectToCalypsoServer(const NimBLEAdvertisedDevice* device) {
   Serial.print("Forming a connection to ");
-  Serial.println(myDevice->getAddress().toString().c_str());
+  Serial.println(device->getAddress().toString().c_str());
 
-  assert(pClient && !pClient->isConnected());
+  assert(pCalypsoClient && !pCalypsoClient->isConnected());
   
   // Connect to the remote BLE Server.
-  pClient->connect(myDevice);  // if you pass BLEAdvertisedDevice instead of address, it will be recognized type of peer device address (public or private)
-  Serial.println(" - Connected to server");
-  // Doug: needed? pClient->setMTU(517); //set client to request maximum MTU from server (default is 23 otherwise)
+  pCalypsoClient->connect(device); 
 
-  Serial.printf("Connecting to: %s\n", myDevice->getAddress().toString().c_str());
+  Serial.printf("Connected to Calypso server %s\n", device->getAddress().toString().c_str());
+  Serial.printf("MTU: %d\n", pCalypsoClient->getMTU()); 
 
   // Obtain a reference to the service we are after in the remote BLE server.
-  NimBLERemoteService* pCalypsoService = pClient->getService(CALYPSO_DATA_SERVICE);
+  NimBLERemoteService* pCalypsoService = pCalypsoClient->getService(CALYPSO_DATA_SERVICE);
   if (pCalypsoService == nullptr) {
     Serial.print("Failed to find data service UUID: ");
     Serial.println(CALYPSO_DATA_SERVICE.toString().c_str());
-    pClient->disconnect();
+    pCalypsoClient->disconnect();
     return false;
   }
   Serial.println(" - Found our service");
@@ -328,7 +459,7 @@ bool connectToBLEServer() {
   if (!pWindDataCharacteristic) {
     Serial.print("Failed to find wind data characteristic UUID: ");
     Serial.println(WIND_DATA_CHARACTERISTIC.toString().c_str());
-    pClient->disconnect();
+    pCalypsoClient->disconnect();
     return false;
   }
   assert(pWindDataCharacteristic->canNotify());
@@ -337,13 +468,13 @@ bool connectToBLEServer() {
 
   // Obtain references to other interesting characteristics in the service of the remote BLE server.
   // These are not needed for NMEA2000 or relay support, just user convenience.
-  NimBLERemoteService* pWindService = pClient->getService(WIND_SERVICE);
+  NimBLERemoteService* pWindService = pCalypsoClient->getService(WIND_SERVICE);
 
   pAwsCharacteristic = pWindService->getCharacteristic(AWS_CHARACTERISTIC);
   if (pAwsCharacteristic == nullptr) {
     Serial.print("Failed to find AWS characteristic UUID: ");
     Serial.println(AWS_CHARACTERISTIC.toString().c_str());
-    disconnectFromBLEServer();
+    disconnectFromCalypsoServer();
     return false;
   }
   Serial.println(" - Found AWS characteristic");
@@ -356,7 +487,7 @@ bool connectToBLEServer() {
   if (pAwdCharacteristic == nullptr) {
     Serial.print("Failed to find AWD characteristic UUID: ");
     Serial.println(AWD_CHARACTERISTIC.toString().c_str());
-    disconnectFromBLEServer();
+    disconnectFromCalypsoServer();
     return false;
   }
   Serial.println(" - Found AWD characteristic");
@@ -368,7 +499,7 @@ bool connectToBLEServer() {
   // Tolerate a missing battery service.
   // BTW, the notification for this data seem to be broken.
 
-  NimBLERemoteService* pBatteryService = pClient->getService(BATTERY_SERVICE);
+  NimBLERemoteService* pBatteryService = pCalypsoClient->getService(BATTERY_SERVICE);
   if (pBatteryService) {
     Serial.println(" - Found our battery service");
     pBatteryLevelCharacteristic = pBatteryService->getCharacteristic(BATTERY_LEVEL_CHARACTERISTIC);
@@ -389,17 +520,79 @@ bool connectToBLEServer() {
   return true;
 }
 
-bool disconnectFromBLEServer() {
-  assert(pClient);
-  pClient->disconnect();
-  Serial.println(" - Disconnected from server");
+bool disconnectFromCalypsoServer() {
+  assert(pCalypsoClient);
+  pCalypsoClient->disconnect();
+  Serial.println(" - Disconnected from Calypso server");
   
   return true;
 }
 
 
+#if DO_BMS
+
+unsigned long last_bms_command_time = 0;  // In ms
+
+bool connectToBMSServer(const NimBLEAdvertisedDevice* device) {
+  Serial.print("Forming a connection to ");
+  Serial.println(device->getAddress().toString().c_str());
+
+  assert(pBMSClient && !pBMSClient->isConnected());
+  
+  // Connect to the remote BLE Server.
+  pBMSClient->connect(device);  
+  
+  Serial.printf("Connected to BMS server: %s\n", device->getAddress().toString().c_str());
+  Serial.printf("MTU: %d\n", pBMSClient->getMTU()); 
+
+  // Obtain a reference to the service we are after in the remote BMS server.
+  NimBLERemoteService* pBMSService = pBMSClient->getService(BMS_DATA_SERVICE);
+  if (pBMSService == nullptr) {
+    Serial.print("Failed to find BMS data service UUID: ");
+    Serial.println(BMS_DATA_SERVICE.toString().c_str());
+    pBMSClient->disconnect();
+    return false;
+  }
+  Serial.println(" - Found our service");
+
+  // Obtain the data characteristic in the service of the remote BLE server.
+  pBMSCharacteristic = pBMSService->getCharacteristic(BMS_DATA_CHARACTERISTIC);
+  if (!pBMSCharacteristic) {
+    Serial.print("Failed to find BMS data characteristic UUID: ");
+    Serial.println(BMS_DATA_CHARACTERISTIC.toString().c_str());
+    pBMSClient->disconnect();
+    return false;
+  }
+
+  // Request notifications from it.
+  assert(pBMSCharacteristic->canNotify());
+  pBMSCharacteristic->subscribe(true, BMSDataNotifyCallback);
+  Serial.println(" - Found BMS data characteristic");
+
+  last_bms_command_time = millis();
+
+  return true;
+}
+
+bool disconnectFromBMSServer() {
+  assert(pBMSClient);
+  pBMSClient->disconnect();
+  Serial.println(" - Disconnected from BMS server");
+  
+  return true;
+}
+
+#endif
+
+
+static const NimBLEAdvertisedDevice* advertisedCalypsoDevice = nullptr;
+#if DO_BMS
+static const NimBLEAdvertisedDevice* advertisedBMSDevice = nullptr;
+#endif
+
+
 /**
- * Scan for BLE servers and find the first one that advertises the service we are looking for.
+ * Scan for BLE servers and find the first one(s) that advertises the services we are looking for.
  */
 class MyScanCallbacks : public NimBLEScanCallbacks {
   /**
@@ -411,13 +604,33 @@ class MyScanCallbacks : public NimBLEScanCallbacks {
 
     // We have found a device, let us now see if it is a Calypso wind meter.
     // We look for the mystery service to distinguish a real Calypso device from another device running this program.
-    if (advertisedDevice->getName() == "ULTRASONIC" && advertisedDevice->isAdvertisingService(WIND_SERVICE) &&
-        advertisedDevice->isAdvertisingService(CALYPSO_MYSTERY_SERVICE)) {
-      Serial.println("Found device, stopping scan...");
+    if (!pCalypsoClient->isConnected() && !advertisedCalypsoDevice) {
+      if (advertisedDevice->getName() == "ULTRASONIC" && advertisedDevice->isAdvertisingService(WIND_SERVICE) &&
+          advertisedDevice->isAdvertisingService(CALYPSO_MYSTERY_SERVICE)) {
+        Serial.println("Found Calypso device.");
+        advertisedCalypsoDevice = advertisedDevice;
+      }
+    }
+
+#if DO_BMS
+    // let us now see if it is a BMS device.
+    if (!pBMSClient->isConnected() && !advertisedBMSDevice) {
+      if (advertisedDevice->getName() == "40906430730" && advertisedDevice->isAdvertisingService(BMS_DATA_SERVICE)) {
+        Serial.println("Found BMS device");
+        advertisedBMSDevice = advertisedDevice;
+      }  
+    }
+#endif
+
+#if DO_BMS
+    if (advertisedCalypsoDevice && advertisedBMSDevice) {
       NimBLEDevice::getScan()->stop();
-      myDevice = advertisedDevice;
-      doConnect = true;
-    }  // Found our server
+    }
+#else
+    if (advertisedCalypsoDevice) {
+      NimBLEDevice::getScan()->stop();
+    }
+#endif
   }    // onResult
 };
 
@@ -428,6 +641,8 @@ void startScan() {
   // Retrieve a Scanner and set the callback we want to use to be informed when we
   // have detected a new device.  Specify that we want active scanning and start the
   // scan to run for 10 seconds.
+  assert(!NimBLEDevice::getScan()->isScanning());
+
   Serial.println("Starting scan...");
   NimBLEScan* pBLEScan = NimBLEDevice::getScan();
   pBLEScan->setScanCallbacks(&scanCallbacks);
@@ -441,7 +656,7 @@ void startScan() {
 // Only the onDisconnect() callback is really needed.
 class MyServerCallbacks : public NimBLEServerCallbacks {
 
-  void onConnect(NimBLEServer* pServer, NimBLEConnInfo& connInfo) override {
+  void onConnect(NimBLEServer* pWindServer, NimBLEConnInfo& connInfo) override {
     Serial.println("Server: Client connected");
     numConnectedClients++;
     if (numConnectedClients <= CONFIG_BT_NIMBLE_MAX_CONNECTIONS) {
@@ -450,7 +665,7 @@ class MyServerCallbacks : public NimBLEServerCallbacks {
     }
   };
 
-  void onDisconnect(NimBLEServer* pServer, NimBLEConnInfo& connInfo, int reason) override {
+  void onDisconnect(NimBLEServer* pWindServer, NimBLEConnInfo& connInfo, int reason) override {
     Serial.println("Server: Client disconnected");
     numConnectedClients--;
     NimBLEDevice::startAdvertising();
@@ -471,10 +686,6 @@ public:
         Serial.println("beforeStartOTA called!\n");
         doingOta = true;
     }
-
-    void beforeStartSPIFFS() {}
-    void afterStop() {}
-    void afterAbort() {}
 };
 
 myOTACallbacks otaCallbacks;
@@ -483,10 +694,10 @@ myOTACallbacks otaCallbacks;
 void startBLEServer() {
   // Server set-up
 
-  NimBLEServer* pServer = NimBLEDevice::createServer();
-  pServer->setCallbacks(&serverCallbacks);
+  NimBLEServer* pWindServer = NimBLEDevice::createServer();
+  pWindServer->setCallbacks(&serverCallbacks);
 
-  NimBLEService* pCalypsoDataService = pServer->createService(CALYPSO_DATA_SERVICE);
+  NimBLEService* pCalypsoDataService = pWindServer->createService(CALYPSO_DATA_SERVICE);
 
   // Our characterics are all read-only, so no callbacks (e.g. onWrite()) are needed.
   pWindDataServerCharacteristic = pCalypsoDataService->createCharacteristic(WIND_DATA_CHARACTERISTIC, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY);
@@ -505,7 +716,7 @@ void startBLEServer() {
 
 
   // We relay the wind service for user convenience - it is redundant with the calypso data service.
-  NimBLEService* pWindService = pServer->createService(WIND_SERVICE);
+  NimBLEService* pWindService = pWindServer->createService(WIND_SERVICE);
 
   // Our characterics are all read-only, so no callbacks (e.g. onWrite()) are needed.
   pAwsServerCharacteristic = pWindService->createCharacteristic(AWS_CHARACTERISTIC, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY);
@@ -517,14 +728,14 @@ void startBLEServer() {
   pAwdServerCharacteristic->createDescriptor(NimBLEUUID("2901"), NIMBLE_PROPERTY::READ)->setValue("Wind direction");
 
 
-  NimBLEService* pBatteryService = pServer->createService(BATTERY_SERVICE);
+  NimBLEService* pBatteryService = pWindServer->createService(BATTERY_SERVICE);
 
   pBatteryServerCharacteristic = pBatteryService->createCharacteristic(BATTERY_LEVEL_CHARACTERISTIC, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY);
   pBatteryServerCharacteristic->setValue("\0");
 
 #if USE_BLE_OTA
   // Add OTA and Device Information Service
-  BLEOTA.begin(pServer);
+  BLEOTA.begin(pWindServer);
   BLEOTA.setCallbacks(&otaCallbacks);
 
   BLEOTA.setModel(MODEL_NAME);
@@ -563,6 +774,39 @@ DNSServer dnsServer;
 AsyncWebServer webServer(80);
 
 bool wifiRunning = false;
+#endif
+
+
+#if DO_BMS
+
+std::array<uint8_t, 20> build_frame(uint8_t address, uint32_t value, uint8_t length) {
+  std::array<uint8_t, 20> frame{};
+  frame[0] = 0xAA;     // start sequence
+  frame[1] = 0x55;     // start sequence
+  frame[2] = 0x90;     // start sequence
+  frame[3] = 0xEB;     // start sequence
+  frame[4] = address;  // holding register
+  frame[5] = length;   // size of the value in byte
+  frame[6] = value >> 0;
+  frame[7] = value >> 8;
+  frame[8] = value >> 16;
+  frame[9] = value >> 24;
+  frame[19] = crc(frame.data(), frame.size() - 1);
+  return frame;
+}
+
+bool send_bms_command(uint8_t opcode) {
+  if (!pBMSClient->isConnected()) {
+    return false;
+  } else {
+    Serial.printf("Sending BMS command 0x%x\n", opcode);
+    auto frame = build_frame(opcode, 0x00000000, 0x00);
+    pBMSCharacteristic->writeValue(frame, frame.size());
+    return true;
+  }
+}
+
+
 #endif
 
 void setup() {
@@ -680,12 +924,19 @@ void setup() {
     Serial.println("NMEA2000.Open failed");
   }
 
-  Serial.print("setup 3\n");
-
   NimBLEDevice::init("RELAY");
-  pClient = NimBLEDevice::createClient();
-  pClient->setClientCallbacks(&clientCallbacks);
-  Serial.println(" - Created client");
+
+  pCalypsoClient = NimBLEDevice::createClient();
+  pCalypsoClient->setClientCallbacks(&calypsoClientCallbacks);
+  Serial.println(" - Created Calypso client");
+
+#if DO_BMS
+  pBMSClient = NimBLEDevice::createClient();
+  pBMSClient->setClientCallbacks(&bmsClientCallbacks);
+  Serial.println(" - Created BMS client");
+
+#endif
+
   startBLEServer();
 }
 
@@ -700,28 +951,53 @@ void loop() {
 
   if (doingOta) {
     // Stop doing everything else
-    if (pClient->isConnected()) {
-      disconnectFromBLEServer();
-      NimBLEDevice::getScan()->stop();
+    if (pCalypsoClient->isConnected()) {
+      disconnectFromCalypsoServer();
     }
-  } else {
+#if DO_BMS
+    if (pBMSClient->isConnected()) {
+      disconnectFromBMSServer();
+    }
+#endif
 
+    NimBLEDevice::getScan()->stop();
+  } else {
     // Normal flow
   
-    if (!pClient->isConnected() && !doConnect && !NimBLEDevice::getScan()->isScanning()) {
+    bool need_scan = false;
+
+    if (!pCalypsoClient->isConnected()) {
+      if (advertisedCalypsoDevice) {
+        if (connectToCalypsoServer(advertisedCalypsoDevice)) {
+          Serial.println("We are now connected to the Calypso Server.");
+        } else {
+          Serial.println("We have failed to connect to the Calypso server.");
+        }
+        advertisedCalypsoDevice = nullptr;
+      } else {
+        need_scan = true;
+      }
+    }
+
+#if DO_BMS
+   if (!pBMSClient->isConnected()) {
+      if (advertisedBMSDevice) {
+        if (connectToBMSServer(advertisedBMSDevice)) {
+          Serial.println("We are now connected to the JK-BMS Server.");
+        } else {
+          Serial.println("We have failed to connect to the BMS server.");
+        }
+        advertisedBMSDevice = nullptr;
+      } else {
+        need_scan = true;
+      }
+    }
+#endif
+
+    if (need_scan && !NimBLEDevice::getScan()->isScanning()) {
       startScan();
     }
 
-    // If the flag "doConnect" is true then we have scanned for and found the desired
-    // BLE Server with which we wish to connect.  Now we connect to it. 
-    if (doConnect == true) {
-      if (connectToBLEServer()) {
-        Serial.println("We are now connected to the Calyposo BLE Server.");
-      } else {
-        Serial.println("We have failed to connect to the server; there is nothing more we will do.");
-      }
-      doConnect = false;
-    }
 
     NMEA2000.ParseMessages();
 
@@ -732,18 +1008,20 @@ void loop() {
       persistentData.commit();
       Serial.printf("NMEA2000 device address changed to 0x%x\n", persistentData.node_address);
     }
-
-  }
-
-  if (notified) {   // This flag gets set about once per second.
-    notified = false;
   
-    if (pBatteryLevelCharacteristic) {
-      // Read the battery level characteristic  (it has more resolution than the byte in the main data string)
-      uint8_t batt = pBatteryLevelCharacteristic->readValue()[0];
-      SendN2kBatteryLevel(batt);
-      if (pBatteryServerCharacteristic) {
-        pBatteryServerCharacteristic->setValue(&batt, sizeof(batt));
+
+    if (notified) {   // This flag gets set about once per second.
+      notified = false;
+    
+      if (pBatteryLevelCharacteristic) {
+        // Read the battery level characteristic  (it has more resolution than the byte in the main data string)
+        uint8_t level = pBatteryLevelCharacteristic->readValue()[0];
+Serial.printf("debug battery level %d\n", level);
+
+        SendN2kBatteryLevel(2, level);
+        if (pBatteryServerCharacteristic) {
+          pBatteryServerCharacteristic->setValue(&level, sizeof(level));
+        }
       }
     }
   }
@@ -751,8 +1029,6 @@ void loop() {
 #if USE_BLE_OTA
   BLEOTA.process();
 #endif
-
-  
 
 //Serial.printf("wifi %d\n", wifiRunning);
 #if USE_ELEGANT_OTA
@@ -770,4 +1046,29 @@ void loop() {
     wifiRunning = false;
   }
 #endif
+
+#if DO_BMS
+
+  unsigned long cur_time = millis();
+
+  static int state = 0;
+
+  if (!pBMSClient->isConnected()) {
+    state = 0;  // If the connection is dropped and re-established, we must re-do the command sequence.
+  } else {
+    if (cur_time - last_bms_command_time > 2000) {
+      last_bms_command_time = cur_time;
+
+      if (state == 0) {
+        send_bms_command(0x97);
+        state = 1;
+      } else if (state == 1) {
+        send_bms_command(0x96);
+        state = 2;
+      }
+    }
+  }
+
+#endif
+
 }
