@@ -138,13 +138,13 @@ void SendN2kWind(double windSpeed, double windAngle) {
 
 
 // *****************************************************************************
-void SendN2kBatteryLevel(int batteryIdx, int batteryLevel) {
+void SendN2kBatteryLevel(int batteryIdx, int batteryLevel, int batteryHealth = 100) {
 
   tN2kMsg N2kMsg;
 
   Serial.printf("Transmitting NMEA data: Battery %d Level %d\n", batteryIdx, batteryLevel);
 
-  SetN2kDCStatus(N2kMsg, 1, batteryIdx, N2kDCt_Battery, batteryLevel, 100 /* state of health % */, 999.9 /* Remaining time */);
+  SetN2kDCStatus(N2kMsg, 1, batteryIdx, N2kDCt_Battery, batteryLevel, batteryHealth, 999.9 /* Remaining time */);
   NMEA2000.SendMsg(N2kMsg);
 }
 
@@ -352,7 +352,7 @@ void process_frame(const std::vector<uint8_t> &data) {
     float current = (float) ((int32_t) jk_get_32bit(158)) * 0.001f;
     Serial.printf("SOC: %d  Voltage: %g  Current: %g  SOH: %d\n", data[173], voltage, current, data[190]);
 
-    SendN2kBatteryLevel(1, data[173]);
+    SendN2kBatteryLevel(1, data[173], data[190]);
 
   }
 }
