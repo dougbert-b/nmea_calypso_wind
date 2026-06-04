@@ -331,36 +331,36 @@ uint8_t crc(const uint8_t data[], const uint16_t len) {
   return crc;
 }
 
-void process_frame(const std::vector<uint8_t> &data) {
+void process_cell_data_frame(const std::vector<uint8_t> &data) {
 
   auto jk_get_16bit = [&](size_t i) -> uint16_t { return (uint16_t(data[i + 1]) << 8) | (uint16_t(data[i + 0]) << 0); };
   auto jk_get_32bit = [&](size_t i) -> uint32_t {
     return (uint32_t(jk_get_16bit(i + 2)) << 16) | (uint32_t(jk_get_16bit(i + 0)) << 0);
   };
 
-  if (data[4] == 2) {
-    // Cell data packet
+  assert(data[4] == 2);    // Cell data packet
 
-    Serial.printf("Cell info frame (JK02_32S, %zu bytes) received:  ", data.size());
-    //Serial.printf("  ");
-    //print_hex_pretty(&data.front(), 150);
-    //Serial.printf("\n  ");
-    //print_hex_pretty(&data.front()+150, data.size()-150); 
-    //Serial.printf("\n");
+  Serial.printf("Cell info frame (JK02_32S, %zu bytes) received:  ", data.size());
+  //Serial.printf("  ");
+  //print_hex_pretty(&data.front(), 150);
+  //Serial.printf("\n  ");
+  //print_hex_pretty(&data.front()+150, data.size()-150); 
+  //Serial.printf("\n");
 
-    float voltage = (float) ((int32_t) jk_get_32bit(150)) * 0.001f;
-    float current = (float) ((int32_t) jk_get_32bit(158)) * 0.001f;
-    Serial.printf("SOC: %d  Voltage: %g  Current: %g  SOH: %d\n", data[173], voltage, current, data[190]);
+  float voltage = (float) ((int32_t) jk_get_32bit(150)) * 0.001f;
+  float current = (float) ((int32_t) jk_get_32bit(158)) * 0.001f;
+  Serial.printf("SOC: %d  Voltage: %g  Current: %g  SOH: %d\n", data[173], voltage, current, data[190]);
 
-    SendN2kBatteryLevel(1, data[173], data[190]);
+  SendN2kBatteryLevel(1, data[173], data[190]);
 
-  }
 }
 
 static const uint16_t MIN_RESPONSE_SIZE = 300;
 static const uint16_t MAX_RESPONSE_SIZE = 384 + 16;
 
 std::vector<uint8_t> frame_buffer;
+unsigned long last_bms_n2k_time = 0;  // In ms
+
 
 void assemble(const uint8_t *data, uint16_t length) {
 
@@ -382,25 +382,41 @@ void assemble(const uint8_t *data, uint16_t length) {
 
   frame_buffer.insert(frame_buffer.end(), data, data + length);
 
-  if (frame_buffer.size() >= MIN_RESPONSE_SIZE) {
-    const uint8_t *raw = &frame_buffer[0];
-    // Even if the frame is 320 bytes long the CRC is at position 300 in front of 0xAA 0x55 0x90 0xEB
-    const uint16_t frame_size = 300;  // frame_buffer.size();
-
-    uint8_t computed_crc = crc(raw, frame_size - 1);
-    uint8_t remote_crc = raw[frame_size - 1];
-    if (computed_crc != remote_crc) {
-      Serial.printf("CRC check failed! 0x%02X != 0x%02X\n", computed_crc, remote_crc);
-      frame_buffer.clear();
-      return;
-    }
-
-    // Make a copy so we can immediately clear the main buffer
-    std::vector<uint8_t> data(frame_buffer.begin(), frame_buffer.end());
-    frame_buffer.clear();
-
-    process_frame(data);
+  if (frame_buffer.size() < MIN_RESPONSE_SIZE) {
+    return;  // Need more data
   }
+
+  // We have assembled a hopefully valid frame.
+
+  // The BMS streams about 2 frames per second.  We can
+  // throw away most of them because we only need to send
+  // the battery level to N2K every 5 or so seconds.
+  unsigned long cur_time = millis();
+  if (cur_time - last_bms_n2k_time < 5000) {
+    frame_buffer.clear();
+    return;
+  } 
+  
+    
+  // Make a copy so we can immediately clear the main buffer
+  std::vector<uint8_t> frame(frame_buffer.begin(), frame_buffer.end());
+  frame_buffer.clear();
+
+  // Even if the frame is 320 bytes long the CRC is at position 300 in front of 0xAA 0x55 0x90 0xEB
+  const uint16_t frame_size = 300;  // frame_buffer.size();
+  uint8_t computed_crc = crc(&frame[0], frame_size - 1);
+  uint8_t remote_crc = frame[frame_size - 1];
+  if (computed_crc != remote_crc) {
+    Serial.printf("CRC check failed! 0x%02X != 0x%02X\n", computed_crc, remote_crc);
+    return;
+  }
+  
+  if (frame[4] == 2) {
+  // Cell data frame
+    last_bms_n2k_time = cur_time;
+    process_cell_data_frame(frame);
+  }
+
 }
 
 
@@ -533,6 +549,7 @@ bool disconnectFromCalypsoServer() {
 
 unsigned long last_bms_command_time = 0;  // In ms
 
+
 bool connectToBMSServer(const NimBLEAdvertisedDevice* device) {
   Serial.print("Forming a connection to ");
   Serial.println(device->getAddress().toString().c_str());
@@ -570,6 +587,8 @@ bool connectToBMSServer(const NimBLEAdvertisedDevice* device) {
   Serial.println(" - Found BMS data characteristic");
 
   last_bms_command_time = millis();
+  last_bms_n2k_time = millis();
+
 
   return true;
 }
