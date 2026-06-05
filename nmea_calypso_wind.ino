@@ -390,9 +390,9 @@ void assemble(const uint8_t *data, uint16_t length) {
 
   // The BMS streams about 2 frames per second.  We can
   // throw away most of them because we only need to send
-  // the battery level to N2K every 5 or so seconds.
+  // the battery level to N2K every 2 or so seconds.
   unsigned long cur_time = millis();
-  if (cur_time - last_bms_n2k_time < 5000) {
+  if (cur_time - last_bms_n2k_time < 2000) {
     frame_buffer.clear();
     return;
   } 
@@ -447,6 +447,8 @@ class MyBMSClientCallbacks : public BLEClientCallbacks {
 MyBMSClientCallbacks bmsClientCallbacks;
 
 #endif
+
+unsigned long last_wind_batt_n2k_time = 0;  // In ms
 
 bool connectToCalypsoServer(const NimBLEAdvertisedDevice* device) {
   Serial.print("Forming a connection to ");
@@ -532,6 +534,8 @@ bool connectToCalypsoServer(const NimBLEAdvertisedDevice* device) {
     Serial.print("Failed to find battery service UUID: ");
     Serial.println(BATTERY_SERVICE.toString().c_str());
   }
+
+  last_wind_batt_n2k_time = millis();
 
   return true;
 }
@@ -1035,12 +1039,17 @@ void loop() {
       if (pBatteryLevelCharacteristic) {
         // Read the battery level characteristic  (it has more resolution than the byte in the main data string)
         uint8_t level = pBatteryLevelCharacteristic->readValue()[0];
-Serial.printf("debug battery level %d\n", level);
 
-        SendN2kBatteryLevel(2, level);
         if (pBatteryServerCharacteristic) {
           pBatteryServerCharacteristic->setValue(&level, sizeof(level));
         }
+
+        // We only need to send the battery level to N2K every 2 or so seconds.
+        unsigned long cur_time = millis();
+        if (cur_time - last_wind_batt_n2k_time >= 2000) {
+          last_wind_batt_n2k_time = cur_time;
+          SendN2kBatteryLevel(2, level);
+        } 
       }
     }
   }
