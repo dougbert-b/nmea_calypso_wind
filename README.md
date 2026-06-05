@@ -13,3 +13,7 @@ Also there is a BLE server that imitates the Calypso wind meter, and relays
 data from the real one.  This allows things like the Calypso phone app to work
 while the wind meter is connected to this device.
 
+Recently added is a ability to read status from a JK-BMS battery management system via BLE,
+and relay the battery voltage to NMEA2000.  This is unrelated to the Calypso wind meter, but
+the ESP32 can easily handle reading from both devices.
+
