@@ -156,10 +156,17 @@ void SendN2kBatteryStatus(int batteryIdx, double voltage, double current=N2kDoub
 
   tN2kMsg N2kMsg;
 
+  double tempK = (temperature == N2kDoubleNA) ? N2kDoubleNA : CToKelvin(temperature);
+
   Serial.printf("Transmitting NMEA data: Battery %d voltage %g current %g temperature %g\n", batteryIdx,
                 voltage, current, temperature);
 
-  SetN2kDCBatStatus(N2kMsg, batteryIdx, voltage, current, CToKelvin(temperature));
+  SetN2kDCBatStatus(N2kMsg, batteryIdx, voltage, current, tempK);
+  NMEA2000.SendMsg(N2kMsg);
+
+  // Send the temperature separartely, since a Garmin GPSMAP ignores battery temperature.  Call it
+  // 'Engine Room' for lack of anything better.
+  SetN2kTemperatureExt(N2kMsg, 0, batteryIdx /*TempInstance*/, N2kts_EngineRoomTemperature, tempK);
   NMEA2000.SendMsg(N2kMsg);
 }
 
@@ -795,7 +802,8 @@ void startBLEServer() {
   pAdvertising->addServiceUUID(pWindService->getUUID());
   
 #if USE_BLE_OTA  
-  pAdvertising->addServiceUUID(BLEOTA.getBLEOTAuuid());
+  // Ensure that the OTA service UUID is represented with 16 bits, so it is more likely to fit in the advertising frame.
+  pAdvertising->addServiceUUID(BLEUUID(BLEOTA.getBLEOTAuuid()).to16());  
 #endif
   pAdvertising->enableScanResponse(true);
   pAdvertising->start();
