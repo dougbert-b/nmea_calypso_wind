@@ -104,7 +104,8 @@ tNMEA0183* NMEA0183 = nullptr;
 
 
 // List here the N2K messages we will transmit.
-const unsigned long transmitMessages[] PROGMEM = { 130306L, 127506L, 0 };  // Apparent Wind and DC Status messages
+// Apparent Wind and DC/Battery Status messages
+const unsigned long transmitMessages[] PROGMEM = { 127506L, 127508L, 130306L, 0 }; 
 
 
 
@@ -136,7 +137,7 @@ void SendN2kWind(double windSpeed, double windAngle) {
   digitalWrite(LED_BUILTIN, HIGH);
 }
 
-
+// PGN 127506
 // *****************************************************************************
 void SendN2kBatteryLevel(int batteryIdx, int batteryLevel, int batteryHealth = 100) {
 
@@ -148,6 +149,19 @@ void SendN2kBatteryLevel(int batteryIdx, int batteryLevel, int batteryHealth = 1
   NMEA2000.SendMsg(N2kMsg);
 }
 
+
+// PGN 127508: Temperature in Celsius!
+// *****************************************************************************
+void SendN2kBatteryStatus(int batteryIdx, double voltage, double current=N2kDoubleNA, double temperature=N2kDoubleNA) {
+
+  tN2kMsg N2kMsg;
+
+  Serial.printf("Transmitting NMEA data: Battery %d voltage %g current %g temperature %g\n", batteryIdx,
+                voltage, current, temperature);
+
+  SetN2kDCBatStatus(N2kMsg, batteryIdx, voltage, current, CToKelvin(temperature));
+  NMEA2000.SendMsg(N2kMsg);
+}
 
 
 
@@ -332,6 +346,7 @@ uint8_t crc(const uint8_t data[], const uint16_t len) {
 }
 
 void process_cell_data_frame(const std::vector<uint8_t> &data) {
+  // Packet format: https://github.com/syssi/esphome-jk-bms/blob/main/docs/protocol-design-ble.md
 
   auto jk_get_16bit = [&](size_t i) -> uint16_t { return (uint16_t(data[i + 1]) << 8) | (uint16_t(data[i + 0]) << 0); };
   auto jk_get_32bit = [&](size_t i) -> uint32_t {
@@ -349,10 +364,12 @@ void process_cell_data_frame(const std::vector<uint8_t> &data) {
 
   float voltage = (float) ((int32_t) jk_get_32bit(150)) * 0.001f;
   float current = (float) ((int32_t) jk_get_32bit(158)) * 0.001f;
-  Serial.printf("SOC: %d  Voltage: %g  Current: %g  SOH: %d\n", data[173], voltage, current, data[190]);
+  float temperature = (float) ((int16_t) jk_get_16bit(162)) * 0.1f;   // Second sensor is offset 164
+
+  Serial.printf("SOC: %d  Voltage: %g  Current: %g  Temperature: %g SOH: %d\n", data[173], voltage, current, temperature, data[190]);
 
   SendN2kBatteryLevel(1, data[173], data[190]);
-
+  SendN2kBatteryStatus(1, voltage, current, temperature);
 }
 
 static const uint16_t MIN_RESPONSE_SIZE = 300;
