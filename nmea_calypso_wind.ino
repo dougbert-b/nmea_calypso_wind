@@ -139,20 +139,20 @@ void SendN2kWind(double windSpeed, double windAngle) {
 
 // PGN 127506
 // *****************************************************************************
-void SendN2kBatteryLevel(int batteryIdx, int batteryLevel, int batteryHealth = 100) {
+void SendN2kBatteryLevel(int batteryIdx, int batteryLevel, int batteryHealth = N2kUInt8NA, double remainingTime = N2kDoubleNA) {
 
   tN2kMsg N2kMsg;
 
   Serial.printf("Transmitting NMEA data: Battery %d Level %d\n", batteryIdx, batteryLevel);
 
-  SetN2kDCStatus(N2kMsg, 1, batteryIdx, N2kDCt_Battery, batteryLevel, batteryHealth, 999.9 /* Remaining time */);
+  SetN2kDCStatus(N2kMsg, 1, batteryIdx, N2kDCt_Battery, batteryLevel, batteryHealth, remainingTime /* in seconds */);
   NMEA2000.SendMsg(N2kMsg);
 }
 
 
 // PGN 127508: Temperature in Celsius!
 // *****************************************************************************
-void SendN2kBatteryStatus(int batteryIdx, double voltage, double current=N2kDoubleNA, double temperature=N2kDoubleNA) {
+void SendN2kBatteryStatus(int batteryIdx, double voltage, double current, double temperature) {
 
   tN2kMsg N2kMsg;
 
@@ -369,13 +369,18 @@ void process_cell_data_frame(const std::vector<uint8_t> &data) {
   //print_hex_pretty(&data.front()+150, data.size()-150); 
   //Serial.printf("\n");
 
+  int soc = data[173];  // Percentage
+  int soh = data[190];  // Percentage
   float voltage = (float) ((int32_t) jk_get_32bit(150)) * 0.001f;
   float current = (float) ((int32_t) jk_get_32bit(158)) * 0.001f;
+  float capacity = (float) ((int32_t) jk_get_32bit(174)) * 0.001f;  // Remaining capacity
   float temperature = (float) ((int16_t) jk_get_16bit(162)) * 0.1f;   // Second sensor is offset 164
 
-  Serial.printf("SOC: %d  Voltage: %g  Current: %g  Temperature: %g SOH: %d\n", data[173], voltage, current, temperature, data[190]);
+  Serial.printf("SOC: %d  Capacity: %g Voltage: %g  Current: %g  Temperature: %g SOH: %d\n",
+		soc, capacity, voltage, current, temperature, soh);
 
-  SendN2kBatteryLevel(1, data[173], data[190]);
+  double remainingTime = (current > 0) ? capacity / current * 3600.0 : N2kDoubleNA;  // In seconds (mAh/mA)
+  SendN2kBatteryLevel(1, soc, soh, remainingTime);
   SendN2kBatteryStatus(1, voltage, current, temperature);
 }
 
