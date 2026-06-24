@@ -139,13 +139,15 @@ void SendN2kWind(double windSpeed, double windAngle) {
 
 // PGN 127506
 // *****************************************************************************
-void SendN2kBatteryLevel(int batteryIdx, int batteryLevel, int batteryHealth = N2kUInt8NA, double remainingTime = N2kDoubleNA) {
+void SendN2kBatteryLevel(int batteryIdx, int batteryLevel, int batteryHealth = N2kUInt8NA,
+                         double remainingTime = N2kDoubleNA, double capacity = N2kDoubleNA) {
 
   tN2kMsg N2kMsg;
 
   Serial.printf("Transmitting NMEA data: Battery %d Level %d\n", batteryIdx, batteryLevel);
 
-  SetN2kDCStatus(N2kMsg, 1, batteryIdx, N2kDCt_Battery, batteryLevel, batteryHealth, remainingTime /* in seconds */);
+  SetN2kDCStatus(N2kMsg, 1, batteryIdx, N2kDCt_Battery, batteryLevel, batteryHealth, remainingTime /* in seconds */,
+                 N2kDoubleNA /*ripple voltage*/, capacity /* in Coulombs*/);
   NMEA2000.SendMsg(N2kMsg);
 }
 
@@ -369,18 +371,19 @@ void process_cell_data_frame(const std::vector<uint8_t> &data) {
   //print_hex_pretty(&data.front()+150, data.size()-150); 
   //Serial.printf("\n");
 
-  int soc = data[173];  // Percentage
-  int soh = data[190];  // Percentage
-  float voltage = (float) ((int32_t) jk_get_32bit(150)) * 0.001f;
-  float current = (float) ((int32_t) jk_get_32bit(158)) * 0.001f;
-  float capacity = (float) ((int32_t) jk_get_32bit(174)) * 0.001f;  // Remaining capacity
-  float temperature = (float) ((int16_t) jk_get_16bit(162)) * 0.1f;   // Second sensor is offset 164
+  unsigned char soc = data[173];  // Percentage
+  unsigned char soh = data[190];  // Percentage
+  double voltage = (double) ((int32_t) jk_get_32bit(150)) * 0.001f;
+  double current = (double) ((int32_t) jk_get_32bit(158)) * 0.001f;  // Amps - negative for discharging
+  double remainingCapacity = (double) ((int32_t) jk_get_32bit(174)) * 0.001f;  // Actual remaining capacity - Ah
+  double fullCapacity = (double) ((int32_t) jk_get_32bit(178)) * 0.001f;  // Fully-charged capacity - Ah
+  double temperature = (double) ((int16_t) jk_get_16bit(162)) * 0.1f;   // Second sensor is offset 164
 
-  Serial.printf("SOC: %d  Capacity: %g Voltage: %g  Current: %g  Temperature: %g SOH: %d\n",
-		soc, capacity, voltage, current, temperature, soh);
+  Serial.printf("SOC: %hhu  Remaining capacity: %g  Full capacity: %g  Voltage: %g  Current: %g  Temperature: %g SOH: %hhu\n",
+		soc, remainingCapacity, fullCapacity, voltage, current, temperature, soh);
 
-  double remainingTime = (current > 0) ? capacity / current * 3600.0 : N2kDoubleNA;  // In seconds (mAh/mA)
-  SendN2kBatteryLevel(1, soc, soh, remainingTime);
+  double remainingTime = (current < 0) ? remainingCapacity / -current * 3600.0 : N2kDoubleNA;  // In seconds (mAh/mA)  (current is negative for discharging)
+  SendN2kBatteryLevel(1, soc, soh, remainingTime, fullCapacity*3600.0);
   SendN2kBatteryStatus(1, voltage, current, temperature);
 }
 
